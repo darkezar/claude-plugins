@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "darkezar",
+  "description": "Каталог плагинов Claude Code",
+  "owner": {
+    "name": "darkezar"
+  },
+  "plugins": [
+    {
+      "name": "review-kit",
+      "description": "Универсальный набор ревью-агентов и команд: полное ревью ветки, безопасность, авторизация, производительность, дизайн-система, упрощение. Чек-листы адаптируются под стек проекта.",
+      "category": "development",
+      "source": "./plugins/review-kit"
+    }
+  ]
+}
