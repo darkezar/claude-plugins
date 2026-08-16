@@ -17,6 +17,12 @@
       "description": "Находит реальные точки входа проекта для тестов, линтера, типов и форматирования (Makefile, docker compose, Sail, npm/composer scripts) и даёт команды /test, /lint, /typecheck, /fmt.",
       "category": "development",
       "source": "./plugins/tooling-kit"
+    },
+    {
+      "name": "context-kit",
+      "description": "Создаёт и поддерживает CLAUDE.md проекта: /context-init собирает черновик из кода и разговора, /context-refresh ловит расхождения между написанным и реальностью.",
+      "category": "development",
+      "source": "./plugins/context-kit"
     }
   ]
 }
