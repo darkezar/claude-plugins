@@ -11,6 +11,12 @@
       "description": "Универсальный набор ревью-агентов и команд: полное ревью ветки, безопасность, авторизация, производительность, дизайн-система, упрощение. Чек-листы адаптируются под стек проекта.",
       "category": "development",
       "source": "./plugins/review-kit"
+    },
+    {
+      "name": "tooling-kit",
+      "description": "Находит реальные точки входа проекта для тестов, линтера, типов и форматирования (Makefile, docker compose, Sail, npm/composer scripts) и даёт команды /test, /lint, /typecheck, /fmt.",
+      "category": "development",
+      "source": "./plugins/tooling-kit"
     }
   ]
 }
