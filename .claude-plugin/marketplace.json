@@ -29,6 +29,12 @@
       "description": "Разбор бага от симптома до причины через историю репозитория: /debug и приёмы археологии git (когда допущение перестало быть верным).",
       "category": "development",
       "source": "./plugins/debug-kit"
+    },
+    {
+      "name": "upgrade-kit",
+      "description": "Инвентаризация зависимостей и план обновления: /upgrade-check — что отстало, что без поддержки, какие breaking changes реально задевают этот код.",
+      "category": "development",
+      "source": "./plugins/upgrade-kit"
     }
   ]
 }
