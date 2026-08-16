@@ -5,7 +5,8 @@ description: |
   локализацию, токены темы, устаревшие описания, мёртвый код, форматирование. Логику,
   безопасность и архитектуру правит лишь по явному решению пользователя, реализуя выбранный
   им вариант. Запускается после ревью и только последовательно.
-allowed-tools: Read Grep Glob Edit Write Skill Bash(git diff) Bash(git status) Bash(git log) Bash(git show) Bash(git stash list) Bash(make *) Bash(npx *) Bash(npm run *) Bash(php *) Bash(./vendor/bin/*) Bash(docker compose *)
+tools: ["Read", "Grep", "Glob", "Skill", "Bash", "Edit", "Write"]
+color: green
 context: fork
 model: opus
 effort: max

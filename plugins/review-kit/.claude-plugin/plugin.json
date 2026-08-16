@@ -1,7 +1,7 @@
 {
   "name": "review-kit",
   "description": "Ревью-агенты и команды для любого проекта: полное ревью ветки, безопасность, авторизация, производительность, дизайн-система, упрощение, ship (commit + push + PR). Чек-листы адаптируются под стек — Laravel, Yii2, Next.js, React SPA, Expo/React Native.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": {
     "name": "darkezar"
   }
