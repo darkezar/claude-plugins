@@ -17,8 +17,8 @@
 Обновить после правок в репозитории:
 
 ```bash
-/plugin marketplace update        # подтянуть каталог
-/plugin update review-kit         # обновить конкретный плагин
+/plugin marketplace update            # подтянуть каталог
+/plugin update review-kit@darkezar    # обновить плагин — имя обязательно с @каталогом
 ```
 
 ## Все команды
