@@ -23,6 +23,12 @@
       "description": "Создаёт и поддерживает CLAUDE.md проекта: /context-init собирает черновик из кода и разговора, /context-refresh ловит расхождения между написанным и реальностью.",
       "category": "development",
       "source": "./plugins/context-kit"
+    },
+    {
+      "name": "debug-kit",
+      "description": "Разбор бага от симптома до причины через историю репозитория: /debug и приёмы археологии git (когда допущение перестало быть верным).",
+      "category": "development",
+      "source": "./plugins/debug-kit"
     }
   ]
 }
