@@ -31,6 +31,12 @@
       "source": "./plugins/debug-kit"
     },
     {
+      "name": "git-kit",
+      "description": "Состояние репозитория для работы без git-интерфейса: /git-state — где HEAD, что не закоммичено, что существует только на этом диске, какие ветки забыты и что лежит в стешах.",
+      "category": "development",
+      "source": "./plugins/git-kit"
+    },
+    {
       "name": "upgrade-kit",
       "description": "Инвентаризация зависимостей и план обновления: /upgrade-check — что отстало, что без поддержки, какие breaking changes реально задевают этот код.",
       "category": "development",

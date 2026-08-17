@@ -11,6 +11,7 @@
 /plugin install context-kit@darkezar
 /plugin install debug-kit@darkezar
 /plugin install upgrade-kit@darkezar
+/plugin install git-kit@darkezar
 ```
 
 Ставится один раз, работает во всех проектах на машине. Управление — `/plugin`.
@@ -32,6 +33,7 @@
 | `/branch-review` `/security-review` `/auth-review` `/performance-review` `/design-review` `/simplify-review` | review-kit | Нужен ровно один ревьюер |
 | `/i18n-sync` | review-kit | Сверить и починить словари локализации |
 | `/test` `/lint` `/typecheck` `/fmt` | tooling-kit | Прогнать то, что реально настроено в проекте |
+| `/git-state` | git-kit | «Где я и что подвисло» — ветка, незакоммиченное, забытые ветки, стеши |
 | `/debug` | debug-kit | Есть баг, нужна причина |
 | `/context-init` | context-kit | В проекте нет `CLAUDE.md` |
 | `/context-refresh` | context-kit | `CLAUDE.md` разошёлся с реальностью |
@@ -51,6 +53,15 @@
 Комбинируются: `/agent-full-review all --fix`.
 
 ## Типовые сценарии
+
+### Начало сессии — «а где я вообще»
+
+```
+/git-state
+```
+
+Ветка, незакоммиченное, забытые ветки, стеши. Дальше предложит действия по пунктам —
+делает только то, что подтвердишь. Ничего разрушительного по своей инициативе не выполняет.
 
 ### Обычный цикл работы
 
@@ -107,7 +118,8 @@ plugins/
 ├── tooling-kit/    как запускать тесты и линтеры в этом проекте
 ├── context-kit/    CLAUDE.md: создание и поддержка
 ├── debug-kit/      разбор бага через историю репозитория
-└── upgrade-kit/    зависимости: инвентаризация и план
+├── upgrade-kit/    зависимости: инвентаризация и план
+└── git-kit/        где HEAD и что подвисло, когда git не видно
 ```
 
 ## Чего эти команды принципиально не делают
