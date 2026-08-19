@@ -41,6 +41,12 @@
       "description": "Инвентаризация зависимостей и план обновления: /upgrade-check — что отстало, что без поддержки, какие breaking changes реально задевают этот код.",
       "category": "development",
       "source": "./plugins/upgrade-kit"
+    },
+    {
+      "name": "explain-kit",
+      "description": "Переводит технический отчёт на человеческий язык: /explain — коротко, без жаргона, с примером почему это проблема, вариантами решения и рекомендацией. Ничего не чинит.",
+      "category": "development",
+      "source": "./plugins/explain-kit"
     }
   ]
 }
