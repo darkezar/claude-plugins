@@ -13,6 +13,7 @@
 /plugin install upgrade-kit@darkezar
 /plugin install git-kit@darkezar
 /plugin install explain-kit@darkezar
+/plugin install workflow-gate@darkezar
 ```
 
 Ставится один раз, работает во всех проектах на машине. Управление — `/plugin`.
@@ -36,6 +37,7 @@
 | `/test` `/lint` `/typecheck` `/fmt` | tooling-kit | Прогнать то, что реально настроено в проекте |
 | `/git-state` | git-kit | «Где я и что подвисло» — ветка, незакоммиченное, забытые ветки, стеши |
 | `/explain` | explain-kit | Отчёт непонятен или слишком длинный — пересказать с вариантами решения |
+| `/workflow-pass` | workflow-gate | Крупная работа, и отказы ворот мешают — открыть фан-аут на N часов |
 | `/debug` | debug-kit | Есть баг, нужна причина |
 | `/context-init` | context-kit | В проекте нет `CLAUDE.md` |
 | `/context-refresh` | context-kit | `CLAUDE.md` разошёлся с реальностью |
@@ -138,7 +140,8 @@ plugins/
 ├── debug-kit/      разбор бага через историю репозитория
 ├── upgrade-kit/    зависимости: инвентаризация и план
 ├── git-kit/        где HEAD и что подвисло, когда git не видно
-└── explain-kit/    пересказ отчёта по-человечески, с вариантами решения
+├── explain-kit/    пересказ отчёта по-человечески, с вариантами решения
+└── workflow-gate/  ворота на фан-аут агентов: по умолчанию закрыт
 ```
 
 ## Чего эти команды принципиально не делают
