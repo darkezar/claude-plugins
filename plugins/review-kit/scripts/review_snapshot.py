@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,16 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 VERDICTS = {"READY TO PR", "READY AFTER FIXES", "NEEDS WORK"}
+RULE_NAMES = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md")
+# Файлы пакета, от которых зависит содержание ревью. Манифесты, документация и навыки
+# публикации и правок сюда не входят: их обновление не делает прежний результат неверным,
+# а лишь сбросило бы все ветки на полный прогон.
+REVIEW_FILES = (
+    "codex-skills/agent-full-review/**/*",
+    "agents/*.md",
+    "skills/stack-*/**/*",
+    "scripts/*.py",
+)
 
 
 def git(repo, *args):
@@ -18,6 +29,22 @@ def git(repo, *args):
     return subprocess.run(
         ["git", "-C", str(repo), *args], check=True, capture_output=True
     ).stdout
+
+
+def names(output):
+    """Разбирает вывод git с -z в список имён."""
+    return [os.fsdecode(name) for name in output.split(b"\0") if name]
+
+
+def is_ancestor(repo, older, newer):
+    """Проверяет, что коммит older достижим из newer; равные коммиты тоже подходят."""
+    if not isinstance(older, str):
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", older, newer],
+        capture_output=True,
+    )
+    return result.returncode == 0
 
 
 def digest(parts):
@@ -41,12 +68,106 @@ def file_digest(path):
     return result.digest()
 
 
+def display_name(root, path):
+    """Имя файла в отпечатке: относительное внутри root, абсолютное снаружи."""
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
 def files_digest(root, paths):
-    """Считает отпечаток содержимого и относительных имён выбранных файлов."""
+    """Считает отпечаток содержимого и имён выбранных файлов."""
     parts = []
     for path in sorted(set(paths)):
-        parts.extend([str(path.relative_to(root)).encode(), file_digest(path)])
+        parts.extend([display_name(root, path).encode(), file_digest(path)])
     return digest(parts)
+
+
+def submodules(repo):
+    """Пути подмодулей из .gitmodules."""
+    if not (repo / ".gitmodules").is_file():
+        return []
+    result = subprocess.run(
+        ["git", "-C", str(repo), "config", "--file", ".gitmodules", "--null",
+         "--get-regexp", r"^submodule\..*\.path$"],
+        capture_output=True,
+    )
+    if result.returncode == 1:
+        return []
+    result.check_returncode()
+    return [repo / entry.split("\n", 1)[1] for entry in names(result.stdout) if "\n" in entry]
+
+
+def tree_digest(repo):
+    """Отпечаток незакоммиченного состояния по байтам файлов, а не по выводу diff.
+
+    Вывод `git diff` зависит от настроек: textconv скрывает часть изменений, внешний diff
+    подменяет вывод целиком, а изменения внутри подмодуля видны лишь как `-dirty`. Поэтому
+    индекс учитывается по id объектов, рабочее дерево — по содержимому изменённых файлов,
+    подмодули — рекурсивно.
+    """
+    status = git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+                 "--ignore-submodules=none")
+    raw = ("--raw", "-z", "--no-renames", "--full-index", "--no-ext-diff", "--no-textconv")
+    index = git(repo, "diff", "--cached", *raw, "HEAD", "--")
+    worktree = git(repo, "diff", *raw, "HEAD", "--")
+    changed = git(repo, "diff", "--name-only", "-z", "--no-renames", "HEAD", "--")
+    untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z")
+    paths = [repo / name for name in names(changed) + names(untracked)]
+    parts = [status, index, worktree, files_digest(repo, paths).encode()]
+    for sub in submodules(repo):
+        if (sub / ".git").exists():
+            parts += [display_name(repo, sub).encode(), git(sub, "rev-parse", "HEAD"),
+                      tree_digest(sub).encode()]
+    return digest(parts)
+
+
+def rule_files(repo, touched, rules):
+    """Находит применимые файлы правил независимо от .gitignore.
+
+    Отслеживаемые и неигнорируемые git перечисляет сам. Игнорируемые — так часто лежит
+    AGENTS.override.md — он не показывает, поэтому они ищутся на диске в каталогах
+    затронутых файлов вплоть до корня. Глобальные инструкции Codex берутся из CODEX_HOME.
+    Файлы из --rules могут лежать и вне репозитория.
+    """
+    listed = git(repo, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    found = {repo / name for name in names(listed) if Path(name).name in RULE_NAMES}
+    for name in touched:
+        directory = (repo / name).parent
+        while directory == repo or repo in directory.parents:
+            found.update(directory / rule for rule in RULE_NAMES if (directory / rule).is_file())
+            directory = directory.parent
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    found.update(home / rule for rule in ("AGENTS.md", "AGENTS.override.md")
+                 if (home / rule).is_file())
+    extra = []
+    for name in rules:
+        path = Path(name)
+        path = (path if path.is_absolute() else repo / path).absolute()
+        if not path.is_file():
+            raise ValueError(f"Не найден файл правил: {path}")
+        extra.append(display_name(repo, path))
+        found.add(path)
+    return found, sorted(extra)
+
+
+def increment(repo, old_head, head_sha, base_sha):
+    """Прирост с прошлого прогона: свои коммиты ветки и разрешённые конфликты слияний.
+
+    Слияние с базой приносит в ветку уже принятый там код — его ревью не повторяется.
+    Но разрешение конфликта записано в самом коммите слияния, поэтому его файлы входят
+    в прирост.
+    """
+    span = (f"{old_head}..{head_sha}", "--not", base_sha)
+    commits = git(repo, "rev-list", "--no-merges", *span).decode().split()
+    merges = git(repo, "rev-list", "--merges", *span).decode().split()
+    files = set(names(git(repo, "log", "--no-merges", "--no-renames", "-z", "--name-only",
+                          "--format=", *span, "--")))
+    for merge in merges:
+        files.update(names(git(repo, "show", "--cc", "--format=", "--name-only", "-z",
+                               merge, "--")))
+    return {"commits": commits, "merges": merges, "files": sorted(files)}
 
 
 def log_path(repo):
@@ -78,7 +199,13 @@ def history(repo, target):
 
 
 def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
-    """Фиксирует обе стороны сравнения, дерево, правила и версию инструкций."""
+    """Фиксирует обе стороны сравнения, дерево, правила и версию инструкций.
+
+    Повторный прогон не требует прежней базы: GitHub сдвигает базу PR при каждом push,
+    а дифф ветки от этого не меняется. Требуется, чтобы прежняя голова и прежняя точка
+    расхождения были предками текущих — то есть ветку дописали или влили в неё базу,
+    но не переписали.
+    """
     repo = Path(git(repo, "rev-parse", "--show-toplevel").decode().strip())
     base_sha = git(repo, "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}")
     head_sha = git(repo, "rev-parse", "--verify", "--end-of-options", f"{head}^{{commit}}")
@@ -89,33 +216,18 @@ def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
     merge_base = git(repo, "merge-base", base_sha, head_sha).decode().strip()
     branch = git(repo, "branch", "--show-current").decode().strip()
     target = target or branch or "detached"
-    status = git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-    diff = git(repo, "diff", "--binary", "HEAD", "--")
-    staged = git(repo, "diff", "--cached", "--binary", "HEAD", "--")
-    untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z")
-    paths = [repo / name.decode() for name in untracked.split(b"\0") if name]
-    tree_hash = digest([status, diff, staged, files_digest(repo, paths).encode()])
-
-    names = git(repo, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-    rule_paths = {
-        repo / name.decode()
-        for name in names.split(b"\0")
-        if name and Path(name.decode()).name in {"AGENTS.md", "AGENTS.override.md", "CLAUDE.md"}
-    }
-    extra_rules = []
-    for name in rules:
-        path = Path(name)
-        path = path if path.is_absolute() else repo / path
-        path = path.absolute()
-        path.relative_to(repo)
-        if not path.is_file():
-            raise ValueError(f"Не найден файл правил: {path}")
-        extra_rules.append(str(path.relative_to(repo)))
-        rule_paths.add(path)
-    package_files = [
-        path for path in PLUGIN_ROOT.rglob("*")
+    status = git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+                 "--ignore-submodules=none")
+    touched = (
+        names(git(repo, "diff", "--name-only", "-z", "--no-renames", merge_base, head_sha, "--"))
+        + names(git(repo, "diff", "--name-only", "-z", "--no-renames", "HEAD", "--"))
+        + names(git(repo, "ls-files", "--others", "--exclude-standard", "-z"))
+    )
+    rule_paths, extra_rules = rule_files(repo, touched, rules)
+    package_files = {
+        path for pattern in REVIEW_FILES for path in PLUGIN_ROOT.glob(pattern)
         if path.is_file() and path.suffix in {".md", ".json", ".yaml", ".py"}
-    ]
+    }
     snapshot = {
         "target": target,
         "scope": ",".join(sorted(set(scope.split(",")))),
@@ -123,15 +235,15 @@ def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
         "head_sha": head_sha,
         "merge_base": merge_base,
         "dirty": bool(status),
-        "tree_hash": tree_hash,
+        "tree_hash": tree_digest(repo),
         "rules_hash": files_digest(repo, rule_paths),
         "plugin_hash": files_digest(PLUGIN_ROOT, package_files),
-        "rules": sorted(extra_rules),
+        "rules": extra_rules,
     }
     snapshot["key"] = digest([json.dumps(snapshot, sort_keys=True).encode()])
     previous = history(repo, target)
     last = previous[-1] if previous else None
-    mode = "first"
+    mode, added = "first", None
     if last:
         old = last["snapshot"]
         if old.get("key") == snapshot["key"]:
@@ -139,17 +251,14 @@ def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
         elif (
             not snapshot["dirty"] and old.get("dirty") is False
             and all(old.get(key) == snapshot[key] for key in (
-                "base_sha", "rules_hash", "plugin_hash", "scope", "rules"
+                "rules_hash", "plugin_hash", "scope", "rules"
             ))
-            and isinstance(old.get("head_sha"), str)
+            and is_ancestor(repo, old.get("head_sha"), head_sha)
+            and is_ancestor(repo, old.get("merge_base"), merge_base)
         ):
-            ancestor = subprocess.run(
-                ["git", "-C", str(repo), "merge-base", "--is-ancestor",
-                 old["head_sha"], head_sha], capture_output=True
-            )
-            if ancestor.returncode == 0:
-                mode = "followup"
-    return {"snapshot": snapshot, "mode": mode, "previous": last}
+            mode = "followup"
+            added = increment(repo, old["head_sha"], head_sha, base_sha)
+    return {"snapshot": snapshot, "mode": mode, "previous": last, "increment": added}
 
 
 def record(repo, snapshot, report):

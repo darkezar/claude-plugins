@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -21,6 +22,11 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.repo = Path(self.temp.name) / "repo"
         self.repo.mkdir()
+        self.codex_home = Path(self.temp.name) / "codex-home"
+        self.codex_home.mkdir()
+        environment = patch.dict(os.environ, {"CODEX_HOME": str(self.codex_home)})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.git("init", "-b", "main")
         self.git("config", "user.email", "test@example.invalid")
         self.git("config", "user.name", "Review Test")
@@ -68,14 +74,55 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.commit("fix")
         self.assertEqual("followup", self.capture()["mode"])
 
-    def test_moving_base_invalidates_same_head(self):
+    def move_base(self, path="release.txt", text="new base\n"):
+        self.git("switch", "main")
+        self.write(path, text)
+        self.commit("release")
+        moved = self.git("rev-parse", "HEAD")
+        self.git("switch", "feature")
+        return moved
+
+    def test_moved_base_with_same_branch_is_followup_without_increment(self):
+        self.record()
+        result = self.capture(base=self.move_base())
+        self.assertEqual("followup", result["mode"])
+        self.assertEqual({"commits": [], "merges": [], "files": []}, result["increment"])
+
+    def test_fix_after_base_moved_is_followup(self):
+        # GitHub сдвигает базу PR при каждом push, поэтому сдвиг базы не должен сбрасывать
+        # ветку на полный прогон.
+        self.record()
+        moved = self.move_base()
+        self.write("code.txt", "fix\n")
+        self.commit("fix")
+        result = self.capture(base=moved)
+        self.assertEqual("followup", result["mode"])
+        self.assertEqual([self.git("rev-parse", "HEAD")], result["increment"]["commits"])
+        self.assertEqual(["code.txt"], result["increment"]["files"])
+
+    def test_merged_base_is_not_reviewed_but_conflict_resolution_is(self):
         self.record()
         self.git("switch", "main")
-        self.write("release.txt", "new base\n")
+        self.write("code.txt", "main version\n")
+        self.write("release.txt", "from main\n")
         self.commit("release")
-        moved_base = self.git("rev-parse", "HEAD")
+        moved = self.git("rev-parse", "HEAD")
         self.git("switch", "feature")
-        self.assertEqual("first", self.capture(base=moved_base)["mode"])
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        self.write("code.txt", "resolved\n")
+        self.git("add", "code.txt")
+        self.git("commit", "--no-edit")
+        result = self.capture(base=moved)
+        self.assertEqual("followup", result["mode"])
+        self.assertEqual([], result["increment"]["commits"])
+        self.assertEqual(["code.txt"], result["increment"]["files"])
+
+    def test_rebased_branch_requires_full_review(self):
+        self.record()
+        moved = self.move_base()
+        self.git("rebase", moved)
+        self.assertEqual("first", self.capture(base=moved)["mode"])
 
     def test_explicit_release_base_is_used_instead_of_default_branch(self):
         self.git("switch", "-c", "release", self.base)
@@ -124,15 +171,80 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.commit("updated rules")
         self.assertEqual("first", self.capture()["mode"])
 
-    def test_updated_plugin_invalidates_cached_report(self):
+    def fake_plugin(self):
         plugin = Path(self.temp.name) / "plugin"
-        plugin.mkdir()
-        instructions = plugin / "SKILL.md"
-        instructions.write_text("first checklist\n")
+        for path in ("agents/agent-branch-reviewer.md", ".codex-plugin/plugin.json"):
+            (plugin / path).parent.mkdir(parents=True, exist_ok=True)
+            (plugin / path).write_text("first\n")
+        return plugin
+
+    def test_updated_checklist_invalidates_cached_report(self):
+        plugin = self.fake_plugin()
         with patch.object(snapshots, "PLUGIN_ROOT", plugin):
             self.record()
-            instructions.write_text("updated checklist\n")
+            (plugin / "agents/agent-branch-reviewer.md").write_text("updated checklist\n")
             self.assertEqual("first", self.capture()["mode"])
+
+    def test_plugin_release_without_checklist_changes_keeps_result(self):
+        plugin = self.fake_plugin()
+        with patch.object(snapshots, "PLUGIN_ROOT", plugin):
+            self.record()
+            (plugin / ".codex-plugin/plugin.json").write_text("new version\n")
+            self.assertEqual("unchanged", self.capture()["mode"])
+
+    def test_change_hidden_by_textconv_invalidates_snapshot(self):
+        self.write(".gitattributes", "*.dat diff=first-line\n")
+        self.git("config", "diff.first-line.textconv", "head -n1")
+        self.write("data.dat", "visible\nhidden one\n")
+        self.commit("data")
+        self.write("data.dat", "visible\nhidden two\n")
+        self.record()
+        self.write("data.dat", "visible\nhidden three\n")
+        self.assertEqual("first", self.capture()["mode"])
+
+    def test_external_diff_does_not_hide_changes(self):
+        self.git("config", "diff.external", "true")
+        self.write("code.txt", "first pending fix\n")
+        self.record()
+        self.write("code.txt", "other pending fix\n")
+        self.assertEqual("first", self.capture()["mode"])
+
+    def test_changed_content_inside_submodule_invalidates_snapshot(self):
+        library = Path(self.temp.name) / "library"
+        library.mkdir()
+        snapshots.git(library, "init", "-b", "main")
+        snapshots.git(library, "config", "user.email", "test@example.invalid")
+        snapshots.git(library, "config", "user.name", "Review Test")
+        (library / "lib.txt").write_text("library\n")
+        snapshots.git(library, "add", ".")
+        snapshots.git(library, "commit", "-m", "library")
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", str(library), "lib")
+        self.commit("submodule")
+        (self.repo / "lib/lib.txt").write_text("first local change\n")
+        self.record()
+        (self.repo / "lib/lib.txt").write_text("second local change\n")
+        self.assertEqual("first", self.capture()["mode"])
+
+    def test_ignored_override_rules_invalidate_result(self):
+        self.write(".gitignore", "AGENTS.override.md\n")
+        self.commit("ignore local rules")
+        self.write("AGENTS.override.md", "local rules\n")
+        self.record()
+        self.write("AGENTS.override.md", "changed local rules\n")
+        self.assertEqual("first", self.capture()["mode"])
+
+    def test_global_codex_rules_invalidate_result(self):
+        (self.codex_home / "AGENTS.md").write_text("global rules\n")
+        self.record()
+        (self.codex_home / "AGENTS.md").write_text("changed global rules\n")
+        self.assertEqual("first", self.capture()["mode"])
+
+    def test_rules_outside_repository_are_accepted(self):
+        guide = Path(self.temp.name) / "team-guide.md"
+        guide.write_text("team contract\n")
+        self.record(rules=[str(guide)])
+        guide.write_text("new team contract\n")
+        self.assertEqual("first", self.capture(rules=[str(guide)])["mode"])
 
     def test_broader_requested_scope_does_not_reuse_narrow_review(self):
         self.record(scope="min")
