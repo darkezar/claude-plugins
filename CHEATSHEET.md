@@ -4,7 +4,7 @@
 
 ## Установка на новой машине
 
-**Codex** — пока только review-kit:
+**Codex** — полный review-kit, остальные плагины пока для Claude Code:
 
 ```bash
 codex plugin marketplace add darkezar/claude-plugins
@@ -21,12 +21,38 @@ $review-kit:agent-full-review 14343 --fix
 $review-kit:agent-full-review 14343 --no-pr-log
 $review-kit:pr-comments Опубликуй последний отчёт
 $review-kit:apply-fixes Исправь механические замечания
+$review-kit:review Быстро проверь изменения
+$review-kit:ship Отправь изменения и создай или обнови PR
+$review-kit:branch-review Проверь корректность и тесты
+$review-kit:security-review 14343
+$review-kit:auth-review 14343
+$review-kit:performance-review 14343
+$review-kit:design-review Проверь изменения UI
+$review-kit:simplify-review Найди возможности упрощения
+$review-kit:i18n-sync --check
+$review-kit:i18n-sync Синхронизируй недостающие ключи
+$review-kit:detect-stack Определи базу и стеки проекта
 ```
 
 При необходимости выбери навык из Review Kit в селекторе. Повторная проверка — тем же
 `agent-full-review`; `all` расширяет состав, `min` оставляет базовое ревью. Обычный запуск
 записывает проверенный коммит и результат в журнал PR. `--no-pr-log` отключает эту запись;
 подробные замечания у строк публикуются с `--comment`.
+`review` и шесть точечных ревьюеров — один проход без журнала полного ревью.
+`ship` выполняет commit, push и создание/обновление PR; отдельное подтверждение этой
+уже запрошенной отправки не нужно. Для Codex используется `$review-kit:ship`,
+а не `/review-kit:ship`. `i18n-sync --check` только проверяет, без правок.
+Служебные `stack-laravel`, `stack-yii2`, `stack-nextjs`, `stack-react-spa`, `stack-expo-rn`
+тоже доступны как навыки: вместе с `detect-stack` и командами выше их **18**.
+
+Обновление установленной копии:
+
+```bash
+codex plugin marketplace upgrade darkezar
+codex plugin add review-kit@darkezar
+```
+
+После обновления открой новый чат, при необходимости перезапусти клиент.
 Подробности, обновление и ограничения — в [README](README.md#установка-в-codex).
 
 **Claude Code** — все плагины:

@@ -18,7 +18,12 @@ RULE_NAMES = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md")
 # а лишь сбросило бы все ветки на полный прогон.
 REVIEW_FILES = (
     "codex-skills/agent-full-review/**/*",
+    "codex-skills/detect-stack/**/*",
+    "codex-skills/stack-*/**/*",
+    "codex-skills/i18n-sync/**/*",
     "agents/*.md",
+    "skills/detect-stack/**/*",
+    "skills/i18n-sync/**/*",
     "skills/stack-*/**/*",
     "scripts/*.py",
 )
@@ -165,8 +170,22 @@ def increment(repo, old_head, head_sha, base_sha):
     files = set(names(git(repo, "log", "--no-merges", "--no-renames", "-z", "--name-only",
                           "--format=", *span, "--")))
     for merge in merges:
-        files.update(names(git(repo, "show", "--cc", "--format=", "--name-only", "-z",
-                               merge, "--")))
+        parents = git(repo, "rev-list", "--parents", "-n", "1", merge).split()[1:]
+        if len(parents) == 2:
+            try:
+                # Combined diff пропускает разрешение выбором одного из родителей.
+                # Remerge diff сравнивает результат с автоматическим слиянием, поэтому
+                # видит и --ours/--theirs, но не приносит бесконфликтный код базы.
+                resolved = git(repo, "show", "--remerge-diff", "--no-renames", "--format=",
+                               "--name-only", "-z", merge, "--")
+                files.update(names(resolved))
+                continue
+            except subprocess.CalledProcessError:
+                # Старый Git без remerge-diff: лучше проверить лишнее, чем потерять
+                # разрешение конфликта. То же правило для octopus merge ниже.
+                pass
+        files.update(names(git(repo, "diff-tree", "-m", "-r", "--no-commit-id",
+                               "--no-renames", "--name-only", "-z", merge, "--")))
     return {"commits": commits, "merges": merges, "files": sorted(files)}
 
 

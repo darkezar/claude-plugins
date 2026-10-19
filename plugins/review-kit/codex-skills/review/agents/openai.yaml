@@ -1,0 +1,3 @@
+interface:
+  display_name: "Быстрое ревью"
+  short_description: "Проверка изменений одним проходом без подагентов"

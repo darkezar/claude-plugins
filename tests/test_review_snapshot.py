@@ -141,6 +141,52 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.write("code.txt", "other pending fix\n")
         self.assertEqual("first", self.capture()["mode"])
 
+    def test_merge_resolution_matching_either_parent_is_reviewed(self):
+        for choice in ("--ours", "--theirs"):
+            with self.subTest(choice=choice):
+                case = ReviewSnapshotTest()
+                case.setUp()
+                try:
+                    case.record()
+                    moved = case.move_base("code.txt", "main version\n")
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        case.git("merge", "main")
+                    case.git("checkout", choice, "--", "code.txt")
+                    case.git("add", "code.txt")
+                    case.git("commit", "--no-edit")
+                    result = case.capture(base=moved)
+                    self.assertEqual("followup", result["mode"])
+                    self.assertEqual([], result["increment"]["commits"])
+                    self.assertEqual(["code.txt"], result["increment"]["files"])
+                finally:
+                    case.doCleanups()
+
+    def test_conflict_free_merge_does_not_review_imported_base_files(self):
+        self.record()
+        moved = self.move_base()
+        self.git("merge", "--no-edit", "main")
+        result = self.capture(base=moved)
+        self.assertEqual("followup", result["mode"])
+        self.assertEqual([], result["increment"]["files"])
+
+    def test_old_git_fallback_keeps_merge_resolutions(self):
+        self.record()
+        moved = self.move_base("code.txt", "main version\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        self.git("checkout", "--ours", "--", "code.txt")
+        self.git("add", "code.txt")
+        self.git("commit", "--no-edit")
+        original_git = snapshots.git
+
+        def old_git(repo, *args):
+            if "--remerge-diff" in args:
+                raise subprocess.CalledProcessError(129, ["git", *args])
+            return original_git(repo, *args)
+
+        with patch.object(snapshots, "git", old_git):
+            self.assertEqual(["code.txt"], self.capture(base=moved)["increment"]["files"])
+
     def test_untracked_content_with_unusual_name_is_part_of_snapshot(self):
         self.write('new "file\n.txt', "first\n")
         self.record()
@@ -191,6 +237,22 @@ class ReviewSnapshotTest(unittest.TestCase):
             self.record()
             (plugin / ".codex-plugin/plugin.json").write_text("new version\n")
             self.assertEqual("unchanged", self.capture()["mode"])
+
+    def test_codex_context_changes_invalidate_cached_review(self):
+        plugin = self.fake_plugin()
+        paths = [plugin / path / "SKILL.md" for path in (
+            "codex-skills/detect-stack", "codex-skills/stack-nextjs",
+            "codex-skills/i18n-sync", "skills/detect-stack", "skills/i18n-sync"
+        )]
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("initial context\n")
+        with patch.object(snapshots, "PLUGIN_ROOT", plugin):
+            for path in paths:
+                with self.subTest(skill=str(path.relative_to(plugin))):
+                    self.record()
+                    path.write_text("updated review context\n")
+                    self.assertEqual("first", self.capture()["mode"])
 
     def test_change_hidden_by_textconv_invalidates_snapshot(self):
         self.write(".gitattributes", "*.dat diff=first-line\n")

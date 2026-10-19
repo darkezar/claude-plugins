@@ -1,7 +1,7 @@
 {
   "name": "review-kit",
-  "version": "0.6.3",
-  "description": "Ревью веток и GitHub PR: корректность, безопасность, права, производительность, дизайн и упрощение. Общие чек-листы для Codex и Claude Code.",
+  "version": "0.7.0",
+  "description": "Полный Review Kit для Codex: общее и точечное ревью, исправления, комментарии в PR, ship, локализация и пять стеков. Общие чек-листы с Claude Code.",
   "author": {
     "name": "darkezar"
   },
@@ -10,8 +10,8 @@
   "skills": "./codex-skills/",
   "interface": {
     "displayName": "Review Kit",
-    "shortDescription": "Ревью веток и PR с учётом стека проекта",
-    "longDescription": "Выбирает специализации, проверяет изменения и записывает проверенный коммит в журнал PR. Подробные замечания у строк публикует по явной команде.",
+    "shortDescription": "Ревью, исправления и отправка кода в PR",
+    "longDescription": "Все 18 навыков Review Kit: полное и быстрое ревью, шесть специализаций, исправления и комментарии, ship (commit + push + PR), синхронизация локалей, определение стека и пять картриджей. Ревью не меняет код; исправления и публикация выполняются по запросу.",
     "developerName": "darkezar",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

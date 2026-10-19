@@ -1,0 +1,3 @@
+interface:
+  display_name: "Ревью доступа"
+  short_description: "Аутентификация, права, сессии и защита от IDOR"
