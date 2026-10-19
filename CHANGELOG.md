@@ -71,6 +71,9 @@
 
 ## review-kit
 
+### 0.6.1
+- Версия пакета синхронно увеличена для Claude Code и Codex до 0.6.1.
+
 ### 0.6.0
 - Нативный каталог Codex в `.agents/plugins/marketplace.json` и отдельный манифест review-kit.
   Claude Code сохраняет свои точки входа; Codex загружает три навыка из `codex-skills/`:
