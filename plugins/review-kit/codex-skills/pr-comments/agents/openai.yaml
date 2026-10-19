@@ -1,0 +1,3 @@
+interface:
+  display_name: "Опубликовать ревью"
+  short_description: "Замечания готового ревью у строк GitHub PR"

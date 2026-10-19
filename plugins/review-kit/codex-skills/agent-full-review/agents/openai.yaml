@@ -1,0 +1,3 @@
+interface:
+  display_name: "Ревью ветки или PR"
+  short_description: "Проверка изменений с выбором специализаций"
