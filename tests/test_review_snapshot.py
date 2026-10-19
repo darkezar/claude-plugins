@@ -3,7 +3,9 @@
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -169,23 +171,81 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.assertEqual("followup", result["mode"])
         self.assertEqual([], result["increment"]["files"])
 
-    def test_old_git_fallback_keeps_merge_resolutions(self):
+    def test_capture_does_not_execute_configured_merge_driver(self):
+        self.write(".gitattributes", "code.txt merge=probe\n")
+        self.commit("merge attributes")
+        marker = Path(self.temp.name) / "driver-ran"
+        driver = Path(self.temp.name) / "merge-driver.py"
+        driver.write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).touch()\nraise SystemExit(1)\n"
+        )
+        self.git("config", "merge.probe.driver",
+                 f"{shlex.quote(sys.executable)} {shlex.quote(str(driver))}")
         self.record()
         moved = self.move_base("code.txt", "main version\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        self.assertTrue(marker.exists())
+        self.git("checkout", "--ours", "--", "code.txt")
+        self.git("add", "code.txt")
+        self.git("commit", "--no-edit")
+        marker.unlink()
+        result = self.capture(base=moved)
+        self.assertFalse(marker.exists(), "capture must only read trees, not run merge drivers")
+        self.assertEqual(["code.txt"], result["increment"]["files"])
+
+    def test_binary_resolution_matching_ours_is_reviewed(self):
+        self.write("code.txt", "ours\0binary\n")
+        self.commit("binary feature")
+        self.record()
+        moved = self.move_base("code.txt", "theirs\0binary\n")
         with self.assertRaises(subprocess.CalledProcessError):
             self.git("merge", "main")
         self.git("checkout", "--ours", "--", "code.txt")
         self.git("add", "code.txt")
         self.git("commit", "--no-edit")
-        original_git = snapshots.git
+        self.assertEqual(["code.txt"], self.capture(base=moved)["increment"]["files"])
 
-        def old_git(repo, *args):
-            if "--remerge-diff" in args:
-                raise subprocess.CalledProcessError(129, ["git", *args])
-            return original_git(repo, *args)
+    def test_rename_delete_keeps_the_actual_renamed_path(self):
+        self.git("restore", "--source", self.base, "--", "code.txt")
+        self.git("mv", "code.txt", "renamed.txt")
+        self.commit("rename feature")
+        self.record()
+        self.git("switch", "main")
+        self.git("rm", "code.txt")
+        self.commit("delete in base")
+        moved = self.git("rev-parse", "HEAD")
+        self.git("switch", "feature")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        self.git("add", "renamed.txt")
+        self.git("commit", "--no-edit")
+        self.assertEqual(["renamed.txt"], self.capture(base=moved)["increment"]["files"])
 
-        with patch.object(snapshots, "git", old_git):
-            self.assertEqual(["code.txt"], self.capture(base=moved)["increment"]["files"])
+    def test_directory_file_resolution_contains_no_synthetic_remerge_paths(self):
+        self.write("shape", "ours file\n")
+        self.commit("file feature")
+        self.record()
+        moved = self.move_base("shape/child.txt", "base child\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        for path in self.repo.glob("shape~*"):
+            path.unlink()
+        (self.repo / "shape/child.txt").unlink()
+        (self.repo / "shape").rmdir()
+        self.write("shape", "ours file\n")
+        self.commit("resolve as file")
+        self.assertEqual(["code.txt", "shape", "shape/child.txt"],
+                         self.capture(base=moved)["increment"]["files"])
+
+    def test_rejected_one_sided_base_change_is_reviewed(self):
+        self.record()
+        moved = self.move_base()
+        self.git("merge", "--no-commit", "main")
+        self.git("rm", "--cached", "release.txt")
+        (self.repo / "release.txt").unlink()
+        self.git("commit", "--no-edit")
+        self.assertEqual(["release.txt"], self.capture(base=moved)["increment"]["files"])
 
     def test_untracked_content_with_unusual_name_is_part_of_snapshot(self):
         self.write('new "file\n.txt', "first\n")

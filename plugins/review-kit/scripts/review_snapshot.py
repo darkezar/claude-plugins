@@ -157,12 +157,50 @@ def rule_files(repo, touched, rules):
     return found, sorted(extra)
 
 
+def tree_changes(repo, before, after):
+    """Реальные пути и статусы двух деревьев, без rename-эвристик и внешних команд."""
+    raw = git(repo, "diff-tree", "-r", "--no-commit-id", "--no-renames", "--no-ext-diff",
+              "--no-textconv", "--raw", "-z", before, after, "--").split(b"\0")
+    return {os.fsdecode(path): header.rsplit(b" ", 1)[1].decode()
+            for header, path in zip(raw[::2], raw[1::2])}
+
+
+def merge_files(repo, merge):
+    """Находит решения merge по деревьям, не выполняя повторное слияние и его drivers."""
+    parents = git(repo, "rev-list", "--parents", "-n", "1", merge).decode().split()[1:]
+    result_changes = [set(tree_changes(repo, parent, merge)) for parent in parents]
+    conservative = set().union(*result_changes)
+    if len(parents) != 2:
+        return conservative
+    try:
+        bases = git(repo, "merge-base", "--all", *parents).decode().split()
+    except subprocess.CalledProcessError:
+        return conservative
+    if len(bases) != 1:
+        return conservative
+
+    left, right = [tree_changes(repo, bases[0], parent) for parent in parents]
+    common = left.keys() & right.keys()
+    # Удаление общего пути может быть rename/delete или rename/rename: новый путь
+    # не обязан совпасть у родителей. D/F-коллизии тоже требуют полного набора.
+    directories = [{str(parent) for name in changed for parent in Path(name).parents}
+                   for changed in (left, right)]
+    if (any(left[name] in {"D", "T"} or right[name] in {"D", "T"} for name in common)
+            or left.keys() & directories[1] or right.keys() & directories[0]):
+        return conservative
+
+    from_left, from_right = result_changes
+    return (common | (from_left & from_right)
+            | ((left.keys() - right.keys()) & from_left)
+            | ((right.keys() - left.keys()) & from_right))
+
+
 def increment(repo, old_head, head_sha, base_sha):
     """Прирост с прошлого прогона: свои коммиты ветки и разрешённые конфликты слияний.
 
     Слияние с базой приносит в ветку уже принятый там код — его ревью не повторяется.
-    Но разрешение конфликта записано в самом коммите слияния, поэтому его файлы входят
-    в прирост.
+    Совместно изменённые пути и ручные отклонения результата входят в прирост.
+    Неоднозначные структурные слияния проверяются консервативно целиком.
     """
     span = (f"{old_head}..{head_sha}", "--not", base_sha)
     commits = git(repo, "rev-list", "--no-merges", *span).decode().split()
@@ -170,22 +208,7 @@ def increment(repo, old_head, head_sha, base_sha):
     files = set(names(git(repo, "log", "--no-merges", "--no-renames", "-z", "--name-only",
                           "--format=", *span, "--")))
     for merge in merges:
-        parents = git(repo, "rev-list", "--parents", "-n", "1", merge).split()[1:]
-        if len(parents) == 2:
-            try:
-                # Combined diff пропускает разрешение выбором одного из родителей.
-                # Remerge diff сравнивает результат с автоматическим слиянием, поэтому
-                # видит и --ours/--theirs, но не приносит бесконфликтный код базы.
-                resolved = git(repo, "show", "--remerge-diff", "--no-renames", "--format=",
-                               "--name-only", "-z", merge, "--")
-                files.update(names(resolved))
-                continue
-            except subprocess.CalledProcessError:
-                # Старый Git без remerge-diff: лучше проверить лишнее, чем потерять
-                # разрешение конфликта. То же правило для octopus merge ниже.
-                pass
-        files.update(names(git(repo, "diff-tree", "-m", "-r", "--no-commit-id",
-                               "--no-renames", "--name-only", "-z", merge, "--")))
+        files.update(merge_files(repo, merge))
     return {"commits": commits, "merges": merges, "files": sorted(files)}
 
 
