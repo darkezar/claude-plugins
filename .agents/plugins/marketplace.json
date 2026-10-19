@@ -1,0 +1,20 @@
+{
+  "name": "darkezar",
+  "interface": {
+    "displayName": "Darkezar — Codex"
+  },
+  "plugins": [
+    {
+      "name": "review-kit",
+      "source": {
+        "source": "local",
+        "path": "./plugins/review-kit"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

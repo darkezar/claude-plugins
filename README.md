@@ -1,6 +1,7 @@
 # claude-plugins
 
-Личный каталог плагинов Claude Code.
+Личный каталог плагинов Claude Code и Codex. Для Codex сейчас адаптирован **review-kit**;
+остальные плагины пока работают в Claude Code.
 
 **[Памятка](CHEATSHEET.md)** — что набирать и когда. **[Изменения](CHANGELOG.md)** — что менялось.
 Ниже — как это устроено.
@@ -24,7 +25,7 @@ review-kit использует tooling-kit, если тот установле�
 Чек-листы разделены на три слоя: универсальный (в агентах), стековый (картриджи `stack-*`)
 и доменный (остаётся в `CLAUDE.md` конкретного проекта).
 
-## Установка
+## Установка в Claude Code
 
 ```bash
 /plugin marketplace add darkezar/claude-plugins
@@ -47,7 +48,70 @@ review-kit использует tooling-kit, если тот установле�
 Правка каталога у себя — в разделе [Разработка](#разработка): там подключение путём вместо
 имени и порядок доставки изменений.
 
+## Установка в Codex
+
+Нужен актуальный Codex с командами `codex plugin`. Для GitHub PR также нужны `git`,
+авторизованный GitHub CLI (`gh auth login`) и `python3` для локального журнала прогонов.
+Claude Code и отдельный MCP-сервер для этой версии не нужны.
+
+В терминале один раз добавь каталог и установи плагин:
+
+```bash
+codex plugin marketplace add darkezar/claude-plugins
+codex plugin add review-kit@darkezar
+```
+
+Открой новый чат Codex в нужном проекте. Если список навыков не обновился, перезапусти клиент.
+Плагин доступен в разделе Plugins; в CLI можно открыть `/plugins`.
+
+Примеры сообщений в Codex:
+
+```text
+$review-kit:agent-full-review Проверь текущую ветку
+$review-kit:agent-full-review 14343
+$review-kit:agent-full-review https://github.com/owner/repo/pull/14343 security,auth
+$review-kit:agent-full-review 14343 --comment
+$review-kit:agent-full-review 14343 --fix
+$review-kit:pr-comments Опубликуй готовый отчёт в PR 14343
+$review-kit:apply-fixes Исправь механические замечания последнего ревью
+```
+
+Навыки Codex имеют пространство имён `review-kit:`. Их можно выбрать через селектор навыков
+из Review Kit. Можно также написать обычным текстом:
+«Проверь PR 14343 с помощью Review Kit».
+
+Codex выбирает те же шесть зон и читает те же чек-листы в `agents/` и `skills/stack-*`.
+Если делегация доступна и разрешена окружением, зоны проверяются подагентами; иначе —
+последовательными проходами. Claude-специфичные `model: opus`, Agent tool и `workflow-gate`
+в Codex не используются. Состав запроса можно задать как `all`, `min` или `security,auth`.
+
+Ревью PR привязано к его фактическим base/head SHA. Для другой головы или грязного дерева
+создаётся отдельный detached worktree; текущая ветка и правки пользователя сохраняются.
+Код проверяется без автофиксов. Исправления запускаются с `--fix`, публикация — с `--comment`
+или через соответствующий навык. Отправка в GitHub идёт от аккаунта `gh`, тип review — `COMMENT`.
+
+Журнал Codex локальный: `$(git rev-parse --git-common-dir)/review-kit-codex.jsonl`.
+В нём обе стороны сравнения, отпечатки дерева, правил и пакета. Изменение базы, rebase или
+правил требует полного прогона; совпавший снимок позволяет повторить сохранённый результат.
+На другой машине без журнала выполняется первое ревью. Публикации служебного журнала в PR нет.
+
+Обновление каталога и установленного пакета:
+
+```bash
+codex plugin marketplace upgrade darkezar
+codex plugin add review-kit@darkezar
+```
+
+После обновления начни новый чат. Для проверки ветки до её слияния в `main` добавляй каталог
+с `--ref <ветка>`. Для локальной разработки вместо GitHub можно указать путь к этому репозиторию.
+
+Поддерживаемые точки входа Codex — `agent-full-review`, `pr-comments`, `apply-fixes`.
+`/ship`, `/i18n-sync`, отдельные слэш-команды ревьюеров и остальные наборы ещё не перенесены;
+точечную проверку задавай аргументами `agent-full-review`.
+
 ## Что набирать
+
+Далее приведены команды **Claude Code**. Соответствия для Codex — в разделе выше.
 
 ### Основное
 
@@ -192,6 +256,31 @@ review-kit использует tooling-kit, если тот установле�
 во втором — код. Молча «обновив» файл под сломанный код, легко узаконить дефект.
 
 ## Разработка
+
+### Codex
+
+Нативный каталог Codex — `.agents/plugins/marketplace.json`. Он ссылается на тот же
+`plugins/review-kit`, что каталог Claude; Codex читает `.codex-plugin/plugin.json` и
+навыки из `codex-skills/`, Claude Code — `.claude-plugin/plugin.json` и `skills/`.
+Содержимое `agents/` и картриджей стека общее и поставляется внутри пакета: внешних ссылок
+на checkout автора нет. Версии двух манифестов review-kit должны совпадать.
+
+Локальная проверка устанавливаемого пакета:
+
+```bash
+codex plugin marketplace add /absolute/path/to/claude-plugins
+codex plugin add review-kit@darkezar
+codex plugin list --json
+python3 -m unittest discover -s tests -v
+```
+
+После изменения файлов повтори установку и открой новый чат: Codex использует установленную
+копию пакета. Правила кэша Claude из следующего раздела не следует переносить на Codex.
+Синтаксис установки сверяется с [документацией OpenAI](https://developers.openai.com/plugins/build/plugins).
+Проверка через `skills/list` app-server должна показывать ровно три навыка `review-kit:*`
+из `codex-skills/`, а не Claude-обёртки из `skills/`.
+
+### Claude Code
 
 Свой экземпляр каталога подключается путём вместо имени:
 

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Исправления после ревью"
+  short_description: "Применение согласованных замечаний ревью"
