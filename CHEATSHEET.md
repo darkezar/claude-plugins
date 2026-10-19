@@ -18,13 +18,16 @@ $review-kit:agent-full-review 14343
 $review-kit:agent-full-review 14343 security,auth
 $review-kit:agent-full-review 14343 --comment
 $review-kit:agent-full-review 14343 --fix
+$review-kit:agent-full-review 14343 --no-pr-log
 $review-kit:pr-comments Опубликуй последний отчёт
 $review-kit:apply-fixes Исправь механические замечания
 ```
 
 При необходимости выбери навык из Review Kit в селекторе. Повторная проверка — тем же
 `agent-full-review`; `all` расширяет состав, `min` оставляет базовое ревью. Обычный запуск
-не пишет в GitHub. Подробности, обновление и ограничения — в [README](README.md#установка-в-codex).
+записывает проверенный коммит и результат в журнал PR. `--no-pr-log` отключает эту запись;
+подробные замечания у строк публикуются с `--comment`.
+Подробности, обновление и ограничения — в [README](README.md#установка-в-codex).
 
 **Claude Code** — все плагины:
 

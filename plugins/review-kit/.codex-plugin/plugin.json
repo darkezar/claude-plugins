@@ -1,6 +1,6 @@
 {
   "name": "review-kit",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Ревью веток и GitHub PR: корректность, безопасность, права, производительность, дизайн и упрощение. Общие чек-листы для Codex и Claude Code.",
   "author": {
     "name": "darkezar"
@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "Review Kit",
     "shortDescription": "Ревью веток и PR с учётом стека проекта",
-    "longDescription": "Выбирает нужные специализации, проверяет изменения и повторно смотрит исправления. Публикует замечания у строк GitHub PR по явной команде.",
+    "longDescription": "Выбирает специализации, проверяет изменения и записывает проверенный коммит в журнал PR. Подробные замечания у строк публикует по явной команде.",
     "developerName": "darkezar",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
