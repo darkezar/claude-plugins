@@ -4,6 +4,8 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import select
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -51,10 +53,18 @@ class RoundFourRegressionTest(unittest.TestCase):
         report = self.root / 'report.json'
         payload = {'verdict': 'READY AFTER FIXES', 'findings': ['Проверка']}
         write_json(report, payload)
+        cwd_probe = self.root / 'python-cwd'
+        wrapper = self.root / 'python3'
+        wrapper.write_text('#!/bin/sh\npwd > ' + shlex.quote(str(cwd_probe)) + '\nexec '
+                           + shlex.quote(sys.executable) + ' "$@"\n', encoding='utf-8')
+        wrapper.chmod(0o755)
+        env = {**os.environ, 'REPORT_FILE': str(report), 'PYTHONPATH': str(self.repo),
+               'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+        env.pop('ARTIFACT_DIR', None)
         result = subprocess.run(['bash', '-c', recipe], cwd=self.repo,
-            env={**os.environ, 'REPORT_FILE': str(report), 'ARTIFACT_DIR': str(self.root),
-                 'PYTHONPATH': str(self.repo)}, capture_output=True, text=True, timeout=10)
+            env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(self.root.resolve(), Path(cwd_probe.read_text().strip()).resolve())
         self.assertFalse(self.poison_marker.exists())
         lines = (self.repo / '.git/review-log.jsonl').read_text(encoding='utf-8').splitlines()
         self.assertEqual([payload], [json.loads(line) for line in lines])
@@ -66,7 +76,8 @@ class RoundFourRegressionTest(unittest.TestCase):
         write_json(path, old)
         candidate = self.root / 'candidate.json'
         write_json(candidate, {'version': 1, 'pr': self.pr, 'revision': 4,
-            'items': [{'comment_id': 'C1', 'thread_id': 'T1', 'state': 'local'}]})
+            'items': [{'comment_id': 'C1', 'thread_id': 'T1', 'state': 'local',
+                       'resolved': False, 'reply_verified': False}]})
         command = [sys.executable, reply_map.__file__, 'repair', '--repo', str(self.repo),
                    '--pr', self.pr, '--input', str(candidate)]
         return path, candidate, command
@@ -98,10 +109,27 @@ class RoundFourRegressionTest(unittest.TestCase):
         descriptor = os.open(path.with_suffix('.lock'), os.O_CREAT | os.O_RDWR, 0o600)
         with os.fdopen(descriptor, 'r+') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            program = '''import json, os, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent))
+import reply_map
+original = reply_map.fcntl.flock
+def observed(fd, operation):
+    info = os.fstat(fd)
+    print(json.dumps({'lock_inode': info.st_ino, 'lock_device': info.st_dev}), flush=True)
+    return original(fd, operation)
+reply_map.fcntl.flock = observed
+sys.argv = sys.argv[1:]
+reply_map.main()
+'''
+            process = subprocess.Popen([sys.executable, '-I', '-c', program, *command[1:]],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    process.communicate(timeout=0.5)
+                # Сигнал приходит после старта Python непосредственно перед реальным flock.
+                self.assertTrue(select.select([process.stdout], [], [], 10)[0])
+                ready = json.loads(process.stdout.readline())
+                info = os.fstat(lock.fileno())
+                self.assertEqual({'lock_inode': info.st_ino, 'lock_device': info.st_dev}, ready)
                 self.assertEqual(original, path.read_bytes())
                 fcntl.flock(lock, fcntl.LOCK_UN)
                 stdout, stderr = process.communicate(timeout=10)
@@ -122,7 +150,8 @@ class RoundFourRegressionTest(unittest.TestCase):
             self.assertEqual(1, result.returncode, result.stderr)
             self.assertEqual(original, path.read_bytes())
         write_json(candidate, {'version': 1, 'pr': self.pr, 'revision': 4,
-            'items': [{'comment_id': 'C1', 'thread_id': 'T1', 'state': 'local'}]})
+            'items': [{'comment_id': 'C1', 'thread_id': 'T1', 'state': 'local',
+                       'resolved': False, 'reply_verified': False}]})
         target = self.root / 'target.json'
         target.write_bytes(original)
         target.chmod(0o600)

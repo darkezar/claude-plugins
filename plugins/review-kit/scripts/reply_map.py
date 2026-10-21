@@ -112,9 +112,18 @@ def save_map(repo, pr, payload):
     return path
 
 
-def repair_map(repo, pr, payload):
-    """Ремонт схемы v1: сохраняет исходник и все ID, не подтверждает факты GitHub."""
+def repair_map(repo, pr, payload, quarantine_items=(), quarantine_reason=None):
+    """Ремонт v1 с явным карантином; факты GitHub подтверждает вызывающий."""
     validate(payload, pr)
+    for item in payload['items']:
+        if any(key not in item for key in ('resolved', 'reply_verified')):
+            raise ValueError('Для repair явно укажи state, resolved и reply_verified каждого item')
+    positions = tuple(quarantine_items)
+    if (any(type(index) is not int or index < 0 for index in positions)
+            or len(set(positions)) != len(positions)
+            or (bool(positions) and not (isinstance(quarantine_reason, str) and quarantine_reason.strip()))
+            or (not positions and quarantine_reason is not None)):
+        raise ValueError('Карантин требует уникальные неотрицательные индексы и непустую причину')
     with locked_map(repo, pr) as path:
         original = read_bytes(path)
         current = json.loads(original.decode('utf-8'))
@@ -131,14 +140,33 @@ def repair_map(repo, pr, payload):
             pass
         else:
             raise ValueError('Карта уже валидна: используй load/save')
-        previous = {}
-        for item in current['items']:
+        if any(index >= len(current['items']) for index in positions):
+            raise ValueError('Индекс карантина отсутствует в исходной карте')
+        history = current.get('repair_history', [])
+        if not isinstance(history, list):
+            raise ValueError('repair_history должен быть массивом')
+        previous, quarantined = {}, []
+        for index, item in enumerate(current['items']):
             comment_id = item.get('comment_id') if isinstance(item, dict) else None
+            if index in positions:
+                quarantined.append({'index': index, 'comment_id': comment_id if isinstance(comment_id, str) else None,
+                                    'reason': quarantine_reason})
+                continue
             if not isinstance(comment_id, str) or not comment_id.strip() or comment_id in previous:
-                raise ValueError('Нельзя автоматически восстановить отсутствующие/повторные comment_id')
+                raise ValueError('Невосстановимый item требует явного карантина по индексу')
             previous[comment_id] = item
-        if not previous.keys() <= {item['comment_id'] for item in payload['items']}:
-            raise ValueError('Ремонт не может удалить исходные comment_id')
+        candidate_ids = {item['comment_id'] for item in payload['items']}
+        if not previous.keys() <= candidate_ids:
+            raise ValueError('Ремонт не может удалить исходные comment_id без карантина')
+        excluded_ids = {item['comment_id'] for item in quarantined} - previous.keys()
+        if excluded_ids & candidate_ids:
+            raise ValueError('Item карантина не должен возвращаться в активный список')
+        for item in payload['items']:
+            old = previous.get(item['comment_id'], {})
+            if old.get('state') == 'published' and item['state'] != 'published':
+                raise ValueError('Ремонт не может откатить published')
+            if any(old.get(key) is True and item[key] is not True for key in ('resolved', 'reply_verified')):
+                raise ValueError('Ремонт не может сбросить resolved/reply_verified')
         updated = {**current, **payload, 'revision': revision + 1, 'items': [
             {**previous.get(item['comment_id'], {}), **item} for item in payload['items']
         ]}
@@ -146,10 +174,12 @@ def repair_map(repo, pr, payload):
         descriptor, backup = tempfile.mkstemp(prefix=path.stem + '.backup-', suffix='.json', dir=path.parent)
         os.close(descriptor)
         write_bytes(backup, original)
+        updated['repair_history'] = [*history, {'revision': revision + 1, 'backup': str(backup),
+                                              'quarantined': quarantined}]
         write_json(path, updated)
         payload.clear()
         payload.update(updated)
-    return path, Path(backup)
+    return path, Path(backup), quarantined
 
 
 def main():
@@ -158,17 +188,27 @@ def main():
     parser.add_argument('--repo', default='.', help='Локальный каталог git-репозитория')
     parser.add_argument('--pr', required=True, help='Канонический URL PR')
     parser.add_argument('--input', type=Path, help='Приватный JSON для save/repair')
+    parser.add_argument('--quarantine-item', type=int, action='append', default=[], metavar='INDEX',
+                        help='Только repair: индекс невосстановимого item, начиная с 0')
+    parser.add_argument('--quarantine-reason', help='Обязательная причина для выбранных items карантина')
     args = parser.parse_args()
     if (args.command in ('save', 'repair')) != bool(args.input):
         parser.error('--input нужен только для save/repair')
+    if args.command != 'repair' and (args.quarantine_item or args.quarantine_reason is not None):
+        parser.error('Карантин доступен только для repair')
+    if (bool(args.quarantine_item) != (args.quarantine_reason is not None)
+            or (args.quarantine_reason is not None and not args.quarantine_reason.strip())):
+        parser.error('--quarantine-item и непустая --quarantine-reason нужны вместе')
     try:
         if args.command == 'load':
             print(json.dumps(load_map(args.repo, args.pr), ensure_ascii=False, indent=2))
         elif args.command in ('save', 'repair'):
             payload = read_json(args.input)
             if args.command == 'repair':
-                path, backup = repair_map(args.repo, args.pr, payload)
-                result = {'path': str(path), 'revision': payload['revision'], 'backup': str(backup)}
+                path, backup, quarantined = repair_map(args.repo, args.pr, payload,
+                    args.quarantine_item, args.quarantine_reason)
+                result = {'path': str(path), 'revision': payload['revision'], 'backup': str(backup),
+                          'quarantined': quarantined}
             else:
                 path = save_map(args.repo, args.pr, payload)
                 result = {'path': str(path), 'revision': payload['revision']}

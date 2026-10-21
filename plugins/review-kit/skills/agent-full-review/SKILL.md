@@ -392,7 +392,8 @@ CI: <статус, head/base SHA, время, ссылка/ограничени�
 
 ```bash
 LOG="$(git rev-parse --path-format=absolute --git-common-dir)/review-log.jsonl"
-(cd "$ARTIFACT_DIR" && python3 -I - "$REPORT_FILE" "$LOG" <<'PY'
+: "${REPORT_FILE:?Укажи сохранённый абсолютный REPORT_FILE}"
+(cd -- "$(dirname -- "$REPORT_FILE")" && python3 -I - "$REPORT_FILE" "$LOG" <<'PY'
 import json, sys
 from pathlib import Path
 report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -403,6 +404,7 @@ PY
 ```
 
 `LOG` вычисляется в worktree и становится абсолютным **до** смены каталога.
+Приватный cwd берётся из абсолютного `REPORT_FILE`; отдельная переменная каталога не нужна.
 `-I` и приватный cwd исключают импорт `json.py` и других модулей из проверяемого PR.
 Не собирай JSON shell-интерполяцией и не удаляй кавычки из находок ради формата.
 
