@@ -28,9 +28,17 @@ class ArgumentParser(argparse.ArgumentParser):
 def expected_checks(values):
     result = set()
     for value in values:
-        workflow, separator, name = value.rpartition('/')
-        if not separator or not workflow or not name:
-            raise ValueError('--expect-check требует WORKFLOW/NAME из доверенной конфигурации')
+        if isinstance(value, str):
+            if value.count('/') != 1:
+                raise ValueError('--expect-check требует WORKFLOW/NAME с одним /; '
+                                 'для имён со слешами используй --expect-check-pair WORKFLOW NAME')
+            workflow, name = value.split('/')
+        elif isinstance(value, (list, tuple)) and len(value) == 2:
+            workflow, name = value
+        else:
+            raise ValueError('Нужна пара WORKFLOW NAME из доверенной конфигурации')
+        if any(not isinstance(part, str) or not part.strip() for part in (workflow, name)):
+            raise ValueError('WORKFLOW и NAME должны быть непустыми строками')
         result.add((workflow, name))
     return result
 
@@ -161,13 +169,16 @@ def main():
     parser.add_argument("--head", required=True)
     parser.add_argument("--base", required=True)
     parser.add_argument("--expect-check", action="append", default=[],
-                        help="Доверенная обязательная job в формате WORKFLOW/NAME, даже если ещё не появилась")
+                        help="Совместимость: WORKFLOW/NAME с одним /; иначе --expect-check-pair")
+    parser.add_argument("--expect-check-pair", action="append", nargs=2, default=[],
+                        metavar=("WORKFLOW", "NAME"),
+                        help="Доверенная обязательная job: два точных имени, в том числе со слешами")
     parser.add_argument("--wait-seconds", type=float, default=0)
     parser.add_argument("--interval", type=float, default=15)
     parser.add_argument("--output", type=Path, required=True, help="JSON вне проверяемого дерева")
     args = parser.parse_args()
     try:
-        result = collect(args.repo, args.pr, args.head, args.base, args.expect_check,
+        result = collect(args.repo, args.pr, args.head, args.base, args.expect_check + args.expect_check_pair,
                          args.wait_seconds, args.interval)
         write_json(args.output, result)
     except (OSError, ValueError) as error:

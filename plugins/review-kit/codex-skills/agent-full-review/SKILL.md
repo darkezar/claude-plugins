@@ -22,11 +22,13 @@ description: Ревью текущей ветки или GitHub PR с выбор
 Прочитай [правила приватных артефактов](../../references/review-artifacts.md) для
 `SNAPSHOT_FILE`, `REPORT_FILE`, `CI_FILE`; задай `PR_REPO` / `PR_NUMBER` из канонического PR.
 
-Создай снимок **до** анализа и сохрани JSON во временный файл:
+Создай снимок **до** анализа; `--output` атомарно создаёт JSON 0600 в приватном каталоге
+даже при `umask 022`. Сохрани абсолютный `SNAPSHOT_FILE` в контексте задачи:
 
 ```bash
 python3 "$PLUGIN_ROOT/scripts/review_snapshot.py" capture --repo "$REVIEW_ROOT" \
-  --base "$BASE_SHA" --head "$HEAD_SHA" --target "$TARGET" --scope "$SCOPE"
+  --base "$BASE_SHA" --head "$HEAD_SHA" --target "$TARGET" --scope "$SCOPE" \
+  --output "$SNAPSHOT_FILE"
 ```
 
 `TARGET` — канонический URL PR или имя текущей ветки; `SCOPE` — `auto`, `all`, `min` либо
@@ -125,7 +127,9 @@ Legacy-код не наследует правила соседнего Yii2-п�
 - `NEEDS WORK` для критичного, `READY AFTER FIXES` для важных исправлений,
   `READY TO PR` при отсутствии обоих. Недостаток данных отрази явно, не выдавай уверенный допуск.
 
-Сохрани итог во временный JSON: `verdict` (один из трёх выше), `findings` (массив находок),
+Сохрани итог в `REPORT_FILE` через `review_storage.write_json` по
+[рецепту приватной записи](../../references/review-artifacts.md), а не обычным `>`:
+`verdict` (один из трёх выше), `findings` (массив находок),
 `open` (массив незакрытых важных/критичных замечаний), `checks` (массив команд и результатов).
 В `findings` сохрани все уникальные замечания, включая механические, мелкие и предложения;
 `open` остаётся только списком важных/критичных и не заменяет полный отчёт для публикации.

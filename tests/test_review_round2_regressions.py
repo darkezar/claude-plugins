@@ -122,7 +122,7 @@ print('OK')
         self.assertEqual(['file', 'replace', 'directory'], events)
 
     def test_workflow_names_can_contain_slashes(self):
-        self.assertEqual({('CI/Backend', 'tests')}, review_ci.expected_checks(['CI/Backend/tests']))
+        self.assertEqual({('CI/Backend', 'tests')}, review_ci.expected_checks([('CI/Backend', 'tests')]))
 
 
 if __name__ == '__main__':

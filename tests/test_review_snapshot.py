@@ -511,6 +511,25 @@ class ReviewSnapshotTest(unittest.TestCase):
         )
         self.assertEqual("unchanged", self.capture()["mode"])
 
+    def test_cli_output_creates_private_snapshot_with_umask_022(self):
+        root = Path(self.temp.name)
+        snapshot_file, report_file = root / "snapshot.json", root / "report.json"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "capture", "--repo", str(self.repo),
+             "--base", self.base, "--output", str(snapshot_file)],
+            umask=0o022, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(0o600, snapshot_file.stat().st_mode & 0o777)
+        write_json(report_file, self.report)
+        recorded = subprocess.run(
+            [sys.executable, str(SCRIPT), "record", "--repo", str(self.repo),
+             "--snapshot", str(snapshot_file), "--report", str(report_file)],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(0, recorded.returncode, recorded.stderr)
+        self.assertEqual("unchanged", self.capture()["mode"])
+
 
 if __name__ == "__main__":
     unittest.main()

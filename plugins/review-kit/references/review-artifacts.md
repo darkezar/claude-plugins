@@ -6,6 +6,21 @@
 Не используй предсказуемый путь прямо в общем `/tmp` и не следуй симлинкам.
 Python-помощники используют `review_storage.py`: проверка владельца/прав и атомарная запись.
 
+Для снимка Codex используй `review_snapshot.py capture ... --output "$SNAPSHOT_FILE"`.
+В Python-коде, который уже собрал полный объект `report`, запиши его так:
+
+```python
+import sys
+sys.path.insert(0, PLUGIN_ROOT + "/scripts")
+from review_storage import write_json
+write_json(REPORT_FILE, report)
+```
+
+Здесь `PLUGIN_ROOT` и `REPORT_FILE` — Python-строки с сохранёнными абсолютными путями;
+подставь их литералами или передай аргументами в этом же вызове. `write_json` создаёт
+файл 0600 атомарно независимо от umask. Для существующего файла с лишними правами
+не ослабляй проверку чтения: пересоздай только собственный временный артефакт этим способом.
+
 Для навыка корень пакета — два уровня выше Base directory (`skills/<имя>` или
 `codex-skills/<имя>`). В тексте Claude-команды используй подставляемый загрузчиком
 `${CLAUDE_PLUGIN_ROOT}`; у команды нет Base directory. Read произвольного справочника

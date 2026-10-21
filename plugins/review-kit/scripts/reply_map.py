@@ -13,6 +13,10 @@ from urllib.parse import urlsplit
 from review_storage import check_file, private_directory, read_json, write_json
 
 
+class RevisionConflict(ValueError):
+    """Карта изменилась: нужен load и сведение, а не повтор прежнего save."""
+
+
 def canonical_pr(value):
     if not isinstance(value, str):
         raise ValueError('PR URL должен быть строкой')
@@ -93,7 +97,7 @@ def save_map(repo, pr, payload):
         current = load_map(repo, pr)
         revision = current.get('revision', 0)
         if payload.get('revision', 0) != revision:
-            raise ValueError('Карта изменена другой сессией: перечитай и сведи items по comment_id')
+            raise RevisionConflict('Карта изменена другой сессией: перечитай и сведи items по comment_id')
         updated = {**payload, 'revision': revision + 1}
         write_json(path, updated)
         payload['revision'] = updated['revision']
@@ -113,9 +117,13 @@ def main():
         if args.command == 'load':
             print(json.dumps(load_map(args.repo, args.pr), ensure_ascii=False, indent=2))
         elif args.command == 'save':
-            print(save_map(args.repo, args.pr, read_json(args.input)))
+            payload = read_json(args.input)
+            path = save_map(args.repo, args.pr, payload)
+            print(json.dumps({'path': str(path), 'revision': payload['revision']}, ensure_ascii=False))
         else:
             print(map_path(args.repo, args.pr))
+    except RevisionConflict as error:
+        parser.exit(3, f'review-kit reply-map: {error}\n')
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'review-kit reply-map: {error}\n')
 

@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from review_storage import read_json
+from review_storage import read_json, write_json
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -385,6 +385,7 @@ def main():
     take.add_argument("--target")
     take.add_argument("--scope", default="auto")
     take.add_argument("--rules", action="append", default=[])
+    take.add_argument("--output", type=Path, help="Атомарно сохранить JSON 0600 в приватном каталоге")
     save = commands.add_parser("record", help="Записать завершённый прогон")
     save.add_argument("--repo", default=".")
     save.add_argument("--snapshot", required=True)
@@ -393,6 +394,8 @@ def main():
     try:
         if args.command == "capture":
             result = capture(args.repo, args.base, args.head, args.target, args.scope, args.rules)
+            if args.output:
+                write_json(args.output, result)
         else:
             data = read_json(args.snapshot)
             report = read_json(args.report)
