@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "plugins/review-kit/scripts/review_ci.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("review_ci", SCRIPT)
 ci = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci)
@@ -41,12 +42,12 @@ class ReviewCITest(unittest.TestCase):
                 self.assertEqual("unconfirmed", result["state"])
 
     def test_project_required_check_must_appear_and_finish(self):
-        result = self.observe([job()], [], expected=("tests", "integration"))
+        result = self.observe([job()], [], expected=("CI/tests", "CI/integration"))
         self.assertEqual("pending", result["state"])
-        self.assertEqual(["integration"], result["missing"])
-        result = self.observe([job()], [], expected=("tests",))
+        self.assertEqual(["CI/integration"], result["missing"])
+        result = self.observe([job()], [], expected=("CI/tests",))
         self.assertEqual("pass", result["state"])
-        result = self.observe([job()], ValueError("rules unavailable"), expected=("tests",))
+        result = self.observe([job()], ValueError("rules unavailable"), expected=("CI/tests",))
         self.assertEqual("unconfirmed", result["state"])
 
     def test_failed_cancelled_skipped_or_unknown_required_check_cannot_pass(self):
@@ -61,19 +62,15 @@ class ReviewCITest(unittest.TestCase):
         self.assertEqual("pass", result["state"])
         self.assertEqual([job("optional", "fail")], ci.summary(result, Path("ci.json"))["attention"])
 
-    def test_old_head_or_base_is_rejected_before_checks(self):
-        for before in ({"headRefOid": "other", "baseRefOid": "base"},
-                       {"headRefOid": "head", "baseRefOid": "other"}):
-            with self.subTest(before=before), patch.object(ci, "query", return_value=before) as read:
-                result = ci.observation("owner/repo", 1, "head", "base", (), float("inf"))
-                self.assertEqual("stale", result["state"])
-                self.assertEqual(1, read.call_count)
+    def test_old_head_is_rejected_before_checks(self):
+        with patch.object(ci, "query", return_value={"headRefOid": "other", "baseRefOid": "base"}) as read:
+            result = ci.observation("owner/repo", 1, "head", "base", (), float("inf"))
+        self.assertEqual("stale", result["state"])
+        self.assertEqual(1, read.call_count)
 
-    def test_success_is_invalidated_if_head_or_base_moves_during_read(self):
-        for after in ({"headRefOid": "other", "baseRefOid": "base"},
-                      {"headRefOid": "head", "baseRefOid": "other"}):
-            with self.subTest(after=after):
-                self.assertEqual("stale", self.observe([job()], [job()], after=after)["state"])
+    def test_success_is_invalidated_if_head_moves_during_read(self):
+        after = {"headRefOid": "other", "baseRefOid": "base"}
+        self.assertEqual("stale", self.observe([job()], [job()], after=after)["state"])
 
     def test_wait_polls_in_the_script_and_stops_after_success(self):
         pending = {"state": "pending", "checks": [], "required": []}
@@ -106,6 +103,30 @@ class ReviewCITest(unittest.TestCase):
             with self.subTest(code=code), patch.object(ci.subprocess, "run", return_value=completed):
                 self.assertEqual([{"bucket": "pending"}], ci.query([], float("inf")))
 
+    def test_cli_usage_and_output_errors_are_distinct_from_ci_unconfirmed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bad_output = root / "link.json"
+            target = root / "target.json"
+            target.write_text("untouched")
+            bad_output.symlink_to(target)
+            # Некорректный формат обязательной job не должен обращаться к gh.
+            cases = [[], ["--repo", "owner/repo", "--pr", "1", "--head", "head",
+                           "--base", "base", "--output", str(bad_output),
+                           "--expect-check", "tests"]]
+            for args in cases:
+                result = subprocess.run([sys.executable, str(SCRIPT), *args],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(4, result.returncode)
+                self.assertEqual("", result.stdout)
+            with patch.object(ci, "collect", return_value={"state": "pass"}), \
+                    patch.object(sys, "argv", [str(SCRIPT), "--repo", "owner/repo", "--pr", "1",
+                                              "--head", "head", "--base", "base", "--output", str(bad_output)]):
+                with self.assertRaises(SystemExit) as stopped:
+                    ci.main()
+                self.assertEqual(4, stopped.exception.code)
+            self.assertEqual("untouched", target.read_text())
+
     def test_cli_exit_status_and_artifact_with_a_fake_gh(self):
         # Проверяем реальную границу CLI, не обращаясь к GitHub или пользовательскому gh.
         with tempfile.TemporaryDirectory() as directory:
@@ -117,7 +138,10 @@ case = os.environ["REVIEW_CI_TEST_CASE"]
 if sys.argv[1:3] == ["pr", "view"]:
     print(json.dumps({"headRefOid": "other" if case == "stale" else "head", "baseRefOid": "base"}))
 else:
-    checks = [] if case == "unconfirmed" else [{"name": "tests", "bucket": case, "state": case.upper()}]
+    if case == "unconfirmed":
+        print("no required checks reported on the 'feature' branch" if "--required" in sys.argv else "no checks reported on the 'feature' branch", file=sys.stderr)
+        sys.exit(1)
+    checks = [{"name": "tests", "bucket": case, "state": case.upper()}]
     print(json.dumps(checks))
     sys.exit({"fail": 1, "pending": 8}.get(case, 0))
 ''')

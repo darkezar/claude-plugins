@@ -10,9 +10,7 @@ disable-model-invocation: true
 Проведи полное код-ревью изменений текущей ветки.
 
 1. Определи базовую ветку и активные стеки проекта по скиллу `detect-stack`.
-2. Выбери модель и effort по [общей политике](../../references/execution-routing.md),
-   разделы «Решение по задаче», «Claude Code» и «Отчёт». Передай выбранные значения
-   параметрами Agent tool, если они поддерживаются; сообщи ограничения.
+2. Выбери исполнение по [execution-routing.md](../../references/execution-routing.md).
    Запусти агента **agent-branch-reviewer** через Agent tool, передав в промпте:
    - `BASE_BRANCH` и `BASE` (хеш merge-base);
    - имена картриджей стека (например `stack-laravel`, `stack-expo-rn`);

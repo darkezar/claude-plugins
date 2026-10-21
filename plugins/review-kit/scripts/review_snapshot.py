@@ -24,6 +24,9 @@ REVIEW_FILES = (
     "agents/*.md",
     "references/execution-routing.md",
     "references/balanced-review.md",
+    "references/check-commands.md",
+    "references/review-artifacts.md",
+    "codex-skills/references/review-target.md",
     "skills/detect-stack/**/*",
     "skills/i18n-sync/**/*",
     "skills/stack-*/**/*",
@@ -187,8 +190,11 @@ def merge_files(repo, merge):
     # не обязан совпасть у родителей. D/F-коллизии тоже требуют полного набора.
     directories = [{str(parent) for name in changed for parent in Path(name).parents}
                    for changed in (left, right)]
-    if (any(left[name] in {"D", "T"} or right[name] in {"D", "T"} for name in common)
-            or left.keys() & directories[1] or right.keys() & directories[0]):
+    structural_conflict = (
+        any(left[name] in {"D", "T"} or right[name] in {"D", "T"} for name in common)
+        or left.keys() & directories[1] or right.keys() & directories[0]
+    )
+    if structural_conflict:
         return conservative
 
     from_left, from_right = result_changes
@@ -245,10 +251,9 @@ def history(repo, target):
 def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
     """Фиксирует обе стороны сравнения, дерево, правила и версию инструкций.
 
-    Повторный прогон не требует прежней базы: GitHub сдвигает базу PR при каждом push,
-    а дифф ветки от этого не меняется. Требуется, чтобы прежняя голова и прежняя точка
-    расхождения были предками текущих — то есть ветку дописали или влили в неё базу,
-    но не переписали.
+    Прежние голова, точка расхождения и база должны быть предками текущих:
+    ветку дописали или влили базу, но не переписали историю. Изменения базы
+    возвращаются отдельно в base_changes для проверки влияния на PR.
     """
     repo = Path(git(repo, "rev-parse", "--show-toplevel").decode().strip())
     base_sha = git(repo, "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}")
@@ -304,12 +309,22 @@ def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
             mode = "followup"
             added = increment(repo, old["head_sha"], head_sha, base_sha)
             base_changes = sorted(tree_changes(repo, old["base_sha"], base_sha))
-    last_round = last.get("analysis_round", len(previous)) if last else 0
-    if type(last_round) is not int or last_round < 0:
-        last_round = len(previous)
     return {"snapshot": snapshot, "mode": mode, "previous": last, "increment": added,
             "base_changes": base_changes,
-            "review_round": last_round + (mode != "unchanged")}
+            "base_changes_key": digest([json.dumps(base_changes, ensure_ascii=False).encode()]),
+            "analysis_round": last_analysis_round(previous)}
+
+
+def last_analysis_round(previous):
+    """Последний завершённый анализ; старые записи без номера учитываются по порядку."""
+    number = 0
+    for entry in previous:
+        value = entry.get("analysis_round")
+        if type(value) is int and value >= 0:
+            number = max(number, value)
+        elif entry["report"].get("analysis_reused") is not True:
+            number += 1
+    return number
 
 
 def record(repo, snapshot, report):
@@ -336,27 +351,26 @@ def record(repo, snapshot, report):
         assessment = impact.get("base_assessment") if isinstance(impact, dict) else None
         if not (
             isinstance(assessment, dict)
-            and assessment.get("paths") == state["base_changes"]
+            and assessment.get("base_changes_key") == state["base_changes_key"]
             and assessment.get("affects_pr") is False
             and isinstance(assessment.get("evidence"), str)
             and assessment["evidence"].strip()
         ):
             raise ValueError("Переиспользование после изменения базы требует impact.base_assessment "
-                             "с полным списком paths, affects_pr: false и evidence")
-    previous = state["previous"] or {}
-    last_round = previous.get("analysis_round", state["review_round"] - (state["mode"] != "unchanged"))
-    if type(last_round) is not int or last_round < 0:
-        last_round = 0
+                             "с текущим base_changes_key, affects_pr: false и evidence")
+        report = {**report, "impact": {**impact, "base_assessment": {
+            **assessment, "paths": state["base_changes"],
+        }}}
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "snapshot": snapshot,
         "report": report,
-        "analysis_round": last_round + (not reused),
+        "analysis_round": state["analysis_round"] + (not reused),
     }
     path = log_path(repo)
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return {"log": str(path), "key": snapshot["key"]}
+    return {"log": str(path), "key": snapshot["key"], "analysis_round": entry["analysis_round"]}
 
 
 def main():

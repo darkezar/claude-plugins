@@ -1,3 +1,6 @@
 interface:
   display_name: "Ship — commit, push и PR"
   short_description: "Отправка изменений с проверками и обновлением PR"
+
+policy:
+  allow_implicit_invocation: false

@@ -5,12 +5,34 @@ import argparse
 from collections import Counter
 from datetime import datetime, timezone
 import json
+import re
 from pathlib import Path
 import subprocess
 import time
 
+from review_storage import write_json
+
 
 CHECK_FIELDS = "name,state,bucket,workflow,link"
+GH_CALL_TIMEOUT = 20
+READ_ONLY_BUDGET = 30
+EXIT_CODES = {"pass": 0, "fail": 1, "pending": 8, "unconfirmed": 2, "stale": 3, "error": 4}
+EMPTY_CHECKS = re.compile(r"no (?:required )?checks reported on the '[^\n]+' branch")
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(EXIT_CODES['error'], f'{self.prog}: {message}\n')
+
+
+def expected_checks(values):
+    result = set()
+    for value in values:
+        workflow, separator, name = value.partition('/')
+        if not separator or not workflow or not name:
+            raise ValueError('--expect-check требует WORKFLOW/NAME из доверенной конфигурации')
+        result.add((workflow, name))
+    return result
 
 
 def query(args, deadline):
@@ -18,11 +40,14 @@ def query(args, deadline):
     if remaining <= 0:
         raise TimeoutError("Истёк бюджет проверки CI")
     result = subprocess.run(
-        ["gh", *args], capture_output=True, text=True, timeout=min(20, remaining)
+        ["gh", *args], capture_output=True, text=True, timeout=min(GH_CALL_TIMEOUT, remaining)
     )
     # gh возвращает 1 при упавших checks, 8 при ожидающих. Ошибку API не выдаём за CI.
     if result.returncode not in (0, 1, 8):
         raise ValueError(result.stderr.strip() or f"gh завершился с кодом {result.returncode}")
+    if (args[:2] == ['pr', 'checks'] and result.returncode == 1
+            and not result.stdout.strip() and EMPTY_CHECKS.fullmatch(result.stderr.strip())):
+        return []
     try:
         return json.loads(result.stdout)
     except ValueError as error:
@@ -41,8 +66,8 @@ def observation(repo, pr, head, base, expected, deadline):
     before = query(meta_args, deadline)
     if not isinstance(before, dict):
         raise ValueError("Не получены SHA pull request")
-    if before.get("headRefOid") != head or before.get("baseRefOid") != base:
-        return {"state": "stale", "reason": "Пара SHA PR отличается от проверенной",
+    if before.get("headRefOid") != head:
+        return {"state": "stale", "reason": "Голова PR отличается от проверенной",
                 "observed": before, "checks": [], "required": []}
 
     checks = check_list(query(["pr", "checks", *target, "--json", CHECK_FIELDS], deadline))
@@ -54,15 +79,18 @@ def observation(repo, pr, head, base, expected, deadline):
     except ValueError as error:
         required, required_error = [], str(error)
     after = query(meta_args, deadline)
-    result = {"observed": after, "checks": checks, "required": required}
-    if not isinstance(after, dict) or any(after.get(key) != before.get(key)
-                                          for key in ("headRefOid", "baseRefOid")):
-        return {**result, "state": "stale", "reason": "PR изменился во время проверки CI"}
+    if not isinstance(after, dict):
+        raise ValueError('Не получены SHA pull request после чтения checks')
+    result = {"observed": after, "checks": checks, "required": required,
+              "base_moved": any(meta.get('baseRefOid') != base for meta in (before, after)),
+              "observed_base_sha": after.get('baseRefOid')}
+    if after.get('headRefOid') != head:
+        return {**result, "state": "stale", "reason": "Голова PR изменилась во время проверки CI"}
 
-    expected = set(expected)
-    present = {item.get("name") for item in checks}
-    missing = sorted(expected - present)
-    selected = required + [item for item in checks if item.get("name") in expected]
+    expected = expected_checks(expected)
+    present = {(item.get('workflow'), item.get('name')) for item in checks}
+    missing = sorted(f'{workflow}/{name}' for workflow, name in expected - present)
+    selected = required + [item for item in checks if (item.get('workflow'), item.get('name')) in expected]
     result.update(missing=missing, required_error=required_error)
     if not selected and not missing:
         return {**result, "state": "unconfirmed",
@@ -83,19 +111,28 @@ def observation(repo, pr, head, base, expected, deadline):
 def collect(repo, pr, head, base, expected=(), wait_seconds=0, interval=15):
     if wait_seconds < 0 or interval <= 0:
         raise ValueError("Бюджет ожидания неотрицательный, интервал положительный")
+    expected_checks(expected)
     started = time.monotonic()
-    deadline = started + (wait_seconds or 30)
+    deadline = started + (wait_seconds or READ_ONLY_BUDGET)
     result = {"state": "unconfirmed", "reason": "CI не подтверждён", "checks": [], "required": []}
     while True:
+        poll_started = time.monotonic()
         try:
             result = observation(repo, pr, head, base, expected, deadline)
-        except (OSError, ValueError, TimeoutError, subprocess.TimeoutExpired) as error:
+        except (TimeoutError, subprocess.TimeoutExpired) as error:
+            if result['state'] == 'pending':
+                result['reason'] = result.get('reason', 'Ожидание CI') + '; бюджет ожидания исчерпан'
+            else:
+                result = {**result, 'state': 'unconfirmed', 'reason': str(error)}
+            break
+        except (OSError, ValueError) as error:
             result = {**result, "state": "unconfirmed", "reason": str(error)}
             break
+        poll_duration = time.monotonic() - poll_started
         if result["state"] != "pending" or not wait_seconds:
             break
         remaining = deadline - time.monotonic()
-        if remaining <= interval:
+        if remaining <= interval + poll_duration:
             result["reason"] += "; бюджет ожидания исчерпан"
             break
         time.sleep(interval)
@@ -108,7 +145,7 @@ def collect(repo, pr, head, base, expected=(), wait_seconds=0, interval=15):
 def summary(result, output):
     """Полный список остаётся артефактом; в контекст идут счётчики и проблемные jobs."""
     fields = ("state", "reason", "repo", "pr", "head_sha", "base_sha", "checked_at",
-              "elapsed_seconds", "missing", "required_error", "base_evidence")
+              "elapsed_seconds", "missing", "required_error", "base_evidence", "base_moved", "observed_base_sha")
     return {
         **{key: result[key] for key in fields if key in result},
         "counts": dict(Counter(item.get("bucket", "unknown") for item in result["checks"])),
@@ -118,13 +155,13 @@ def summary(result, output):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True, help="[HOST/]OWNER/REPO проверенного PR")
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--base", required=True)
     parser.add_argument("--expect-check", action="append", default=[],
-                        help="Обязательная по правилам проекта job, даже если ещё не появилась")
+                        help="Доверенная обязательная job в формате WORKFLOW/NAME, даже если ещё не появилась")
     parser.add_argument("--wait-seconds", type=float, default=0)
     parser.add_argument("--interval", type=float, default=15)
     parser.add_argument("--output", type=Path, required=True, help="JSON вне проверяемого дерева")
@@ -132,11 +169,11 @@ def main():
     try:
         result = collect(args.repo, args.pr, args.head, args.base, args.expect_check,
                          args.wait_seconds, args.interval)
-        args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        write_json(args.output, result)
     except (OSError, ValueError) as error:
-        parser.exit(2, f"review-kit CI: {error}\n")
+        parser.exit(EXIT_CODES["error"], f"review-kit CI: {error}\n")
     print(json.dumps(summary(result, args.output), ensure_ascii=False, indent=2))
-    raise SystemExit({"pass": 0, "fail": 1, "pending": 8, "unconfirmed": 2, "stale": 3}[result["state"]])
+    raise SystemExit(EXIT_CODES[result["state"]])
 
 
 if __name__ == "__main__":

@@ -77,17 +77,17 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.assertEqual("followup", self.capture()["mode"])
 
     def test_ci_refresh_does_not_add_a_code_review_round(self):
-        self.assertEqual(1, self.capture()["review_round"])
+        self.assertEqual(0, self.capture()["analysis_round"])
         result = self.record()
-        self.assertEqual(1, self.capture()["review_round"])
+        self.assertEqual(1, self.capture()["analysis_round"])
         refreshed = {**self.report, "analysis_reused": True, "ci": {"state": "pending"}}
         snapshots.record(self.repo, result["snapshot"], refreshed)
-        self.assertEqual(1, self.capture()["review_round"])
+        self.assertEqual(1, self.capture()["analysis_round"])
         self.write("code.txt", "fix\n")
         self.commit("fix")
-        self.assertEqual(2, self.capture()["review_round"])
+        self.assertEqual(1, self.capture()["analysis_round"])
         self.record()
-        self.assertEqual(2, self.capture()["review_round"])
+        self.assertEqual(2, self.capture()["analysis_round"])
 
     def test_changed_code_cannot_be_marked_as_only_a_ci_refresh(self):
         self.record()
@@ -100,7 +100,20 @@ class ReviewSnapshotTest(unittest.TestCase):
     def test_new_analysis_of_same_snapshot_counts_as_another_round(self):
         self.record()
         self.record()
-        self.assertEqual(2, self.capture()["review_round"])
+        self.assertEqual(2, self.capture()["analysis_round"])
+
+    def test_legacy_rounds_and_status_refresh_share_one_counter(self):
+        self.record()
+        journal = snapshots.log_path(self.repo)
+        entry = json.loads(journal.read_text())
+        entry.pop("analysis_round")
+        journal.write_text(json.dumps(entry) + "\n")
+        state = self.capture()
+        self.assertEqual(1, state["analysis_round"])
+        snapshots.record(self.repo, state["snapshot"], {**self.report, "analysis_reused": True})
+        self.assertEqual(1, self.capture()["analysis_round"])
+        self.record()
+        self.assertEqual(2, self.capture()["analysis_round"])
 
     def move_base(self, path="release.txt", text="new base\n"):
         self.git("switch", "main")
@@ -120,9 +133,9 @@ class ReviewSnapshotTest(unittest.TestCase):
     def test_reusing_analysis_after_base_changes_requires_complete_impact_evidence(self):
         self.record()
         result = self.capture(base=self.move_base())
-        valid = {"paths": ["release.txt"], "affects_pr": False,
+        valid = {"base_changes_key": result["base_changes_key"], "affects_pr": False,
                  "evidence": "Release metadata has no consumers in the PR or its checks"}
-        for assessment in (None, {**valid, "paths": []}, {**valid, "affects_pr": True},
+        for assessment in (None, {**valid, "base_changes_key": "stale"}, {**valid, "affects_pr": True},
                            {**valid, "evidence": ""}):
             with self.subTest(assessment=assessment), self.assertRaisesRegex(ValueError, "base_assessment"):
                 snapshots.record(self.repo, result["snapshot"], {
@@ -132,7 +145,9 @@ class ReviewSnapshotTest(unittest.TestCase):
         snapshots.record(self.repo, result["snapshot"], {
             **self.report, "analysis_reused": True, "impact": {"base_assessment": valid},
         })
-        self.assertEqual(1, self.capture(base=result["snapshot"]["base_sha"])["review_round"])
+        stored = self.capture(base=result["snapshot"]["base_sha"])
+        self.assertEqual(1, stored["analysis_round"])
+        self.assertEqual(["release.txt"], stored["previous"]["report"]["impact"]["base_assessment"]["paths"])
 
     def test_fix_after_base_moved_is_followup(self):
         # Продвижение базы допускает целевую проверку её влияния вместо полного прогона.
@@ -186,25 +201,27 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.write("code.txt", "other pending fix\n")
         self.assertEqual("first", self.capture()["mode"])
 
-    def test_merge_resolution_matching_either_parent_is_reviewed(self):
-        for choice in ("--ours", "--theirs"):
-            with self.subTest(choice=choice):
-                case = ReviewSnapshotTest()
-                case.setUp()
-                try:
-                    case.record()
-                    moved = case.move_base("code.txt", "main version\n")
-                    with self.assertRaises(subprocess.CalledProcessError):
-                        case.git("merge", "main")
-                    case.git("checkout", choice, "--", "code.txt")
-                    case.git("add", "code.txt")
-                    case.git("commit", "--no-edit")
-                    result = case.capture(base=moved)
-                    self.assertEqual("followup", result["mode"])
-                    self.assertEqual([], result["increment"]["commits"])
-                    self.assertEqual(["code.txt"], result["increment"]["files"])
-                finally:
-                    case.doCleanups()
+    def conflicting_merge(self, path, choice):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        self.git("checkout", choice, "--", path)
+        self.git("add", path)
+        self.git("commit", "--no-edit")
+
+    def check_parent_resolution(self, choice):
+        self.record()
+        moved = self.move_base("code.txt", "main version\n")
+        self.conflicting_merge("code.txt", choice)
+        result = self.capture(base=moved)
+        self.assertEqual("followup", result["mode"])
+        self.assertEqual([], result["increment"]["commits"])
+        self.assertEqual(["code.txt"], result["increment"]["files"])
+
+    def test_merge_resolution_matching_ours_is_reviewed(self):
+        self.check_parent_resolution("--ours")
+
+    def test_merge_resolution_matching_theirs_is_reviewed(self):
+        self.check_parent_resolution("--theirs")
 
     def test_conflict_free_merge_does_not_review_imported_base_files(self):
         self.record()
@@ -236,12 +253,8 @@ class ReviewSnapshotTest(unittest.TestCase):
                  f"{shlex.quote(sys.executable)} {shlex.quote(str(driver))}")
         self.record()
         moved = self.move_base("code.txt", "main version\n")
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.git("merge", "main")
+        self.conflicting_merge("code.txt", "--ours")
         self.assertTrue(marker.exists())
-        self.git("checkout", "--ours", "--", "code.txt")
-        self.git("add", "code.txt")
-        self.git("commit", "--no-edit")
         marker.unlink()
         result = self.capture(base=moved)
         self.assertFalse(marker.exists(), "capture must only read trees, not run merge drivers")
@@ -252,11 +265,7 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.commit("binary feature")
         self.record()
         moved = self.move_base("code.txt", "theirs\0binary\n")
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.git("merge", "main")
-        self.git("checkout", "--ours", "--", "code.txt")
-        self.git("add", "code.txt")
-        self.git("commit", "--no-edit")
+        self.conflicting_merge("code.txt", "--ours")
         self.assertEqual(["code.txt"], self.capture(base=moved)["increment"]["files"])
 
     def test_rename_delete_keeps_the_actual_renamed_path(self):
@@ -363,6 +372,8 @@ class ReviewSnapshotTest(unittest.TestCase):
         )]
         paths.extend(plugin / path for path in (
             "references/execution-routing.md", "references/balanced-review.md",
+            "references/check-commands.md", "references/review-artifacts.md",
+            "codex-skills/references/review-target.md",
         ))
         for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True)
