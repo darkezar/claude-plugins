@@ -146,10 +146,15 @@ else:
     sys.exit({"fail": 1, "pending": 8}.get(case, 0))
 ''')
             gh.chmod(0o755)
+            actual = root / "actual"
+            actual.mkdir(mode=0o700)
+            (actual / "artifacts").mkdir(mode=0o700)
+            alias = root / "alias"
+            alias.symlink_to(actual, target_is_directory=True)
             for state, code in (("pass", 0), ("fail", 1), ("pending", 8),
                                 ("unconfirmed", 2), ("stale", 3)):
                 with self.subTest(state=state):
-                    output = root / f"{state}.json"
+                    output = alias / "artifacts" / f"{state}.json"
                     env = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
                            "REVIEW_CI_TEST_CASE": state}
                     result = subprocess.run(
@@ -162,7 +167,7 @@ else:
                     self.assertEqual(state, compact["state"])
                     self.assertEqual(state, full["state"])
                     self.assertEqual("observed_pr_metadata_only", compact["base_evidence"])
-                    self.assertEqual(str(output), compact["artifact"])
+                    self.assertEqual(str(output.resolve()), compact["artifact"])
                     self.assertNotIn("checks", compact)
                     self.assertIn("checks", full)
 

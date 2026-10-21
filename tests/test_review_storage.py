@@ -24,7 +24,7 @@ class ReviewStorageTest(unittest.TestCase):
         self.git('config', 'user.name', 'Test')
         self.git('commit', '--allow-empty', '-m', 'base')
         self.pr = 'https://github.com/owner/repo/pull/1'
-        self.data = {'version': 1, 'pr': self.pr, 'items': [{'comment_id': 'C1', 'state': 'local'}]}
+        self.data = {'version': 1, 'pr': self.pr, 'items': [{'comment_id': 'C1', 'thread_id': 'T1', 'state': 'local'}]}
 
     def git(self, *args, cwd=None):
         return subprocess.run(['git', '-C', str(cwd or self.repo), *args], check=True,
@@ -68,6 +68,7 @@ class ReviewStorageTest(unittest.TestCase):
     def test_public_directory_or_file_is_rejected(self):
         public = self.root / 'public'
         public.mkdir(mode=0o755)
+        public.chmod(0o755)
         with self.assertRaises(ValueError):
             write_json(public / 'ci.json', {})
         private = self.root / 'private'

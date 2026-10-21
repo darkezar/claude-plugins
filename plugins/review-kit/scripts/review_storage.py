@@ -32,7 +32,7 @@ def read_json(path):
     private_directory(path.parent)
     check_file(path.lstat(), path)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(descriptor) as stream:
+    with os.fdopen(descriptor, encoding="utf-8") as stream:
         check_file(os.fstat(stream.fileno()), path)
         return json.load(stream)
 
@@ -46,11 +46,16 @@ def write_json(path, payload):
         pass
     descriptor, temporary = tempfile.mkstemp(prefix='.review-kit-', dir=path.parent)
     try:
-        with os.fdopen(descriptor, 'w') as stream:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
             json.dump(payload, stream, ensure_ascii=False, indent=2)
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         Path(temporary).unlink(missing_ok=True)

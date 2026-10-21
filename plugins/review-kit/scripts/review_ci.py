@@ -28,7 +28,7 @@ class ArgumentParser(argparse.ArgumentParser):
 def expected_checks(values):
     result = set()
     for value in values:
-        workflow, separator, name = value.partition('/')
+        workflow, separator, name = value.rpartition('/')
         if not separator or not workflow or not name:
             raise ValueError('--expect-check требует WORKFLOW/NAME из доверенной конфигурации')
         result.add((workflow, name))

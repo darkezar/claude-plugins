@@ -9,6 +9,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from review_storage import read_json
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 VERDICTS = {"READY TO PR", "READY AFTER FIXES", "NEEDS WORK"}
@@ -392,8 +394,8 @@ def main():
         if args.command == "capture":
             result = capture(args.repo, args.base, args.head, args.target, args.scope, args.rules)
         else:
-            data = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
-            report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+            data = read_json(args.snapshot)
+            report = read_json(args.report)
             result = record(args.repo, data["snapshot"], report)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"review-kit: {error}\n")

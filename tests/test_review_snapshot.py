@@ -13,6 +13,9 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "plugins/review-kit/scripts/review_snapshot.py"
+sys.path.insert(0, str(SCRIPT.parent))
+from review_storage import write_json
+
 SPEC = importlib.util.spec_from_file_location("review_snapshot", SCRIPT)
 snapshots = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(snapshots)
@@ -474,6 +477,24 @@ class ReviewSnapshotTest(unittest.TestCase):
             stream.write('broken\nnull\n{"snapshot":null}\n')
         self.assertEqual("unchanged", self.capture()["mode"])
 
+    def test_cli_record_rejects_symlink_inputs(self):
+        root = Path(self.temp.name)
+        snapshot_file, report_file = root / "snapshot.json", root / "report.json"
+        write_json(snapshot_file, self.capture())
+        write_json(report_file, self.report)
+        link = root / "untrusted-link.json"
+        for option, target in (("--snapshot", snapshot_file), ("--report", report_file)):
+            link.unlink(missing_ok=True)
+            link.symlink_to(target)
+            args = {"--snapshot": str(snapshot_file), "--report": str(report_file)}
+            args[option] = str(link)
+            command = [sys.executable, str(SCRIPT), "record", "--repo", str(self.repo)]
+            for flag, value in args.items():
+                command.extend((flag, value))
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            self.assertEqual(1, result.returncode)
+            self.assertFalse(snapshots.log_path(self.repo).exists())
+
     def test_cli_capture_and_record(self):
         snapshot_file = Path(self.temp.name) / "snapshot.json"
         report_file = Path(self.temp.name) / "report.json"
@@ -481,8 +502,8 @@ class ReviewSnapshotTest(unittest.TestCase):
             ["python3", str(SCRIPT), "capture", "--repo", str(self.repo), "--base", self.base],
             check=True, capture_output=True, text=True,
         )
-        snapshot_file.write_text(result.stdout)
-        report_file.write_text(json.dumps(self.report))
+        write_json(snapshot_file, json.loads(result.stdout))
+        write_json(report_file, self.report)
         subprocess.run(
             ["python3", str(SCRIPT), "record", "--repo", str(self.repo),
              "--snapshot", str(snapshot_file), "--report", str(report_file)],
