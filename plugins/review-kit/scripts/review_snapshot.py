@@ -22,6 +22,8 @@ REVIEW_FILES = (
     "codex-skills/stack-*/**/*",
     "codex-skills/i18n-sync/**/*",
     "agents/*.md",
+    "references/execution-routing.md",
+    "references/balanced-review.md",
     "skills/detect-stack/**/*",
     "skills/i18n-sync/**/*",
     "skills/stack-*/**/*",
@@ -285,7 +287,7 @@ def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
     snapshot["key"] = digest([json.dumps(snapshot, sort_keys=True).encode()])
     previous = history(repo, target)
     last = previous[-1] if previous else None
-    mode, added = "first", None
+    mode, added, base_changes = "first", None, []
     if last:
         old = last["snapshot"]
         if old.get("key") == snapshot["key"]:
@@ -297,10 +299,17 @@ def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
             ))
             and is_ancestor(repo, old.get("head_sha"), head_sha)
             and is_ancestor(repo, old.get("merge_base"), merge_base)
+            and is_ancestor(repo, old.get("base_sha"), base_sha)
         ):
             mode = "followup"
             added = increment(repo, old["head_sha"], head_sha, base_sha)
-    return {"snapshot": snapshot, "mode": mode, "previous": last, "increment": added}
+            base_changes = sorted(tree_changes(repo, old["base_sha"], base_sha))
+    last_round = last.get("analysis_round", len(previous)) if last else 0
+    if type(last_round) is not int or last_round < 0:
+        last_round = len(previous)
+    return {"snapshot": snapshot, "mode": mode, "previous": last, "increment": added,
+            "base_changes": base_changes,
+            "review_round": last_round + (mode != "unchanged")}
 
 
 def record(repo, snapshot, report):
@@ -310,16 +319,39 @@ def record(repo, snapshot, report):
     for key in ("findings", "open", "checks"):
         if not isinstance(report.get(key), list):
             raise ValueError(f"Поле {key} должно быть массивом")
-    current = capture(
+    state = capture(
         repo, snapshot["base_sha"], snapshot["head_sha"], snapshot["target"],
         snapshot["scope"], snapshot["rules"]
-    )["snapshot"]
+    )
+    current = state["snapshot"]
     if current["key"] != snapshot["key"]:
         raise ValueError("Код, правила или пакет изменились во время ревью; запись отклонена")
+    reused = report.get("analysis_reused") is True
+    if reused and (state["mode"] == "first" or any(
+        (state["increment"] or {}).get(key) for key in ("commits", "files")
+    )):
+        raise ValueError("Нельзя переиспользовать анализ при новом коде или несовместимом снимке")
+    if reused and state["base_changes"]:
+        impact = report.get("impact")
+        assessment = impact.get("base_assessment") if isinstance(impact, dict) else None
+        if not (
+            isinstance(assessment, dict)
+            and assessment.get("paths") == state["base_changes"]
+            and assessment.get("affects_pr") is False
+            and isinstance(assessment.get("evidence"), str)
+            and assessment["evidence"].strip()
+        ):
+            raise ValueError("Переиспользование после изменения базы требует impact.base_assessment "
+                             "с полным списком paths, affects_pr: false и evidence")
+    previous = state["previous"] or {}
+    last_round = previous.get("analysis_round", state["review_round"] - (state["mode"] != "unchanged"))
+    if type(last_round) is not int or last_round < 0:
+        last_round = 0
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "snapshot": snapshot,
         "report": report,
+        "analysis_round": last_round + (not reused),
     }
     path = log_path(repo)
     with path.open("a", encoding="utf-8") as stream:

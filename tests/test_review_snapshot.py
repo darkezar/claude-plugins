@@ -76,6 +76,32 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.commit("fix")
         self.assertEqual("followup", self.capture()["mode"])
 
+    def test_ci_refresh_does_not_add_a_code_review_round(self):
+        self.assertEqual(1, self.capture()["review_round"])
+        result = self.record()
+        self.assertEqual(1, self.capture()["review_round"])
+        refreshed = {**self.report, "analysis_reused": True, "ci": {"state": "pending"}}
+        snapshots.record(self.repo, result["snapshot"], refreshed)
+        self.assertEqual(1, self.capture()["review_round"])
+        self.write("code.txt", "fix\n")
+        self.commit("fix")
+        self.assertEqual(2, self.capture()["review_round"])
+        self.record()
+        self.assertEqual(2, self.capture()["review_round"])
+
+    def test_changed_code_cannot_be_marked_as_only_a_ci_refresh(self):
+        self.record()
+        self.write("code.txt", "fix\n")
+        self.commit("fix")
+        result = self.capture()
+        with self.assertRaisesRegex(ValueError, "переиспользовать анализ"):
+            snapshots.record(self.repo, result["snapshot"], {**self.report, "analysis_reused": True})
+
+    def test_new_analysis_of_same_snapshot_counts_as_another_round(self):
+        self.record()
+        self.record()
+        self.assertEqual(2, self.capture()["review_round"])
+
     def move_base(self, path="release.txt", text="new base\n"):
         self.git("switch", "main")
         self.write(path, text)
@@ -89,10 +115,27 @@ class ReviewSnapshotTest(unittest.TestCase):
         result = self.capture(base=self.move_base())
         self.assertEqual("followup", result["mode"])
         self.assertEqual({"commits": [], "merges": [], "files": []}, result["increment"])
+        self.assertEqual(["release.txt"], result["base_changes"])
+
+    def test_reusing_analysis_after_base_changes_requires_complete_impact_evidence(self):
+        self.record()
+        result = self.capture(base=self.move_base())
+        valid = {"paths": ["release.txt"], "affects_pr": False,
+                 "evidence": "Release metadata has no consumers in the PR or its checks"}
+        for assessment in (None, {**valid, "paths": []}, {**valid, "affects_pr": True},
+                           {**valid, "evidence": ""}):
+            with self.subTest(assessment=assessment), self.assertRaisesRegex(ValueError, "base_assessment"):
+                snapshots.record(self.repo, result["snapshot"], {
+                    **self.report, "analysis_reused": True,
+                    "impact": {"base_assessment": assessment},
+                })
+        snapshots.record(self.repo, result["snapshot"], {
+            **self.report, "analysis_reused": True, "impact": {"base_assessment": valid},
+        })
+        self.assertEqual(1, self.capture(base=result["snapshot"]["base_sha"])["review_round"])
 
     def test_fix_after_base_moved_is_followup(self):
-        # GitHub сдвигает базу PR при каждом push, поэтому сдвиг базы не должен сбрасывать
-        # ветку на полный прогон.
+        # Продвижение базы допускает целевую проверку её влияния вместо полного прогона.
         self.record()
         moved = self.move_base()
         self.write("code.txt", "fix\n")
@@ -170,6 +213,16 @@ class ReviewSnapshotTest(unittest.TestCase):
         result = self.capture(base=moved)
         self.assertEqual("followup", result["mode"])
         self.assertEqual([], result["increment"]["files"])
+        self.assertEqual(["release.txt"], result["base_changes"])
+
+    def test_rewritten_base_requires_full_review(self):
+        moved = self.move_base()
+        self.record(base=moved)
+        self.git("switch", "main")
+        self.git("commit", "--amend", "-m", "rewritten base")
+        rewritten = self.git("rev-parse", "HEAD")
+        self.git("switch", "feature")
+        self.assertEqual("first", self.capture(base=rewritten)["mode"])
 
     def test_capture_does_not_execute_configured_merge_driver(self):
         self.write(".gitattributes", "code.txt merge=probe\n")
@@ -293,9 +346,13 @@ class ReviewSnapshotTest(unittest.TestCase):
 
     def test_plugin_release_without_checklist_changes_keeps_result(self):
         plugin = self.fake_plugin()
+        journal = plugin / "references/pr-review-journal.md"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text("initial journal format\n")
         with patch.object(snapshots, "PLUGIN_ROOT", plugin):
             self.record()
             (plugin / ".codex-plugin/plugin.json").write_text("new version\n")
+            journal.write_text("updated journal format\n")
             self.assertEqual("unchanged", self.capture()["mode"])
 
     def test_codex_context_changes_invalidate_cached_review(self):
@@ -304,6 +361,9 @@ class ReviewSnapshotTest(unittest.TestCase):
             "codex-skills/detect-stack", "codex-skills/stack-nextjs",
             "codex-skills/i18n-sync", "skills/detect-stack", "skills/i18n-sync"
         )]
+        paths.extend(plugin / path for path in (
+            "references/execution-routing.md", "references/balanced-review.md",
+        ))
         for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("initial context\n")

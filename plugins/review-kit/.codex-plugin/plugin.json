@@ -1,6 +1,6 @@
 {
   "name": "review-kit",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Полный Review Kit для Codex: общее и точечное ревью, исправления, комментарии в PR, ship, локализация и пять стеков. Общие чек-листы с Claude Code.",
   "author": {
     "name": "darkezar"
