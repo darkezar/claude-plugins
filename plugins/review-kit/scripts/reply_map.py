@@ -2,15 +2,17 @@
 """Находит и сохраняет приватную карту ответов PR, общую для worktree и новых сессий."""
 
 import argparse
+from contextlib import contextmanager
 import fcntl
 import os
 import hashlib
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 from urllib.parse import urlsplit
 
-from review_storage import check_file, private_directory, read_json, write_json
+from review_storage import check_file, private_directory, read_bytes, read_json, write_bytes, write_json
 
 
 class RevisionConflict(ValueError):
@@ -87,13 +89,19 @@ def load_map(repo, pr):
     return validate(read_json(path), pr)
 
 
-def save_map(repo, pr, payload):
-    payload = validate(payload, pr)
+@contextmanager
+def locked_map(repo, pr):
     path = map_path(repo, pr, create=True)
     descriptor = os.open(path.with_suffix('.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'r+', encoding='utf-8') as lock:
         check_file(os.fstat(lock.fileno()), path.with_suffix('.lock'))
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield path
+
+
+def save_map(repo, pr, payload):
+    payload = validate(payload, pr)
+    with locked_map(repo, pr) as path:
         current = load_map(repo, pr)
         revision = current.get('revision', 0)
         if payload.get('revision', 0) != revision:
@@ -104,22 +112,67 @@ def save_map(repo, pr, payload):
     return path
 
 
+def repair_map(repo, pr, payload):
+    """Ремонт схемы v1: сохраняет исходник и все ID, не подтверждает факты GitHub."""
+    validate(payload, pr)
+    with locked_map(repo, pr) as path:
+        original = read_bytes(path)
+        current = json.loads(original.decode('utf-8'))
+        if not isinstance(current, dict) or not isinstance(current.get('items'), list):
+            raise ValueError('Ремонт требует JSON-объект с исходным массивом items')
+        # Проверяем версию, привязку PR и revision даже у карты со старой схемой items.
+        validate({**current, 'items': []}, pr)
+        revision = current.get('revision', 0)
+        if payload.get('revision', 0) != revision:
+            raise RevisionConflict('Карта изменена: подготовь ремонт по актуальной revision')
+        try:
+            validate(current, pr)
+        except ValueError:
+            pass
+        else:
+            raise ValueError('Карта уже валидна: используй load/save')
+        previous = {}
+        for item in current['items']:
+            comment_id = item.get('comment_id') if isinstance(item, dict) else None
+            if not isinstance(comment_id, str) or not comment_id.strip() or comment_id in previous:
+                raise ValueError('Нельзя автоматически восстановить отсутствующие/повторные comment_id')
+            previous[comment_id] = item
+        if not previous.keys() <= {item['comment_id'] for item in payload['items']}:
+            raise ValueError('Ремонт не может удалить исходные comment_id')
+        updated = {**current, **payload, 'revision': revision + 1, 'items': [
+            {**previous.get(item['comment_id'], {}), **item} for item in payload['items']
+        ]}
+        validate(updated, pr)
+        descriptor, backup = tempfile.mkstemp(prefix=path.stem + '.backup-', suffix='.json', dir=path.parent)
+        os.close(descriptor)
+        write_bytes(backup, original)
+        write_json(path, updated)
+        payload.clear()
+        payload.update(updated)
+    return path, Path(backup)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('path', 'load', 'save'))
+    parser.add_argument('command', choices=('path', 'load', 'save', 'repair'))
     parser.add_argument('--repo', default='.', help='Локальный каталог git-репозитория')
     parser.add_argument('--pr', required=True, help='Канонический URL PR')
-    parser.add_argument('--input', type=Path, help='Приватный JSON, только для save')
+    parser.add_argument('--input', type=Path, help='Приватный JSON для save/repair')
     args = parser.parse_args()
-    if (args.command == 'save') != bool(args.input):
-        parser.error('--input нужен только для save')
+    if (args.command in ('save', 'repair')) != bool(args.input):
+        parser.error('--input нужен только для save/repair')
     try:
         if args.command == 'load':
             print(json.dumps(load_map(args.repo, args.pr), ensure_ascii=False, indent=2))
-        elif args.command == 'save':
+        elif args.command in ('save', 'repair'):
             payload = read_json(args.input)
-            path = save_map(args.repo, args.pr, payload)
-            print(json.dumps({'path': str(path), 'revision': payload['revision']}, ensure_ascii=False))
+            if args.command == 'repair':
+                path, backup = repair_map(args.repo, args.pr, payload)
+                result = {'path': str(path), 'revision': payload['revision'], 'backup': str(backup)}
+            else:
+                path = save_map(args.repo, args.pr, payload)
+                result = {'path': str(path), 'revision': payload['revision']}
+            print(json.dumps(result, ensure_ascii=False))
         else:
             print(map_path(args.repo, args.pr))
     except RevisionConflict as error:

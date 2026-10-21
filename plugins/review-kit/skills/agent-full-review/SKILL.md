@@ -391,16 +391,19 @@ CI: <статус, head/base SHA, время, ссылка/ограничени�
 при изменении SHA/дерева/правил обозначь устаревание, не записывай новый допуск.
 
 ```bash
-LOG="$(git rev-parse --git-common-dir)/review-log.jsonl"
-python3 - "$REPORT_FILE" "$LOG" <<'PY'
+LOG="$(git rev-parse --path-format=absolute --git-common-dir)/review-log.jsonl"
+(cd "$ARTIFACT_DIR" && python3 -I - "$REPORT_FILE" "$LOG" <<'PY'
 import json, sys
 from pathlib import Path
-report = json.loads(Path(sys.argv[1]).read_text())
-with Path(sys.argv[2]).open("a") as stream:
+report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+with Path(sys.argv[2]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(report, ensure_ascii=False, separators=(",", ":")) + "\n")
 PY
+)
 ```
 
+`LOG` вычисляется в worktree и становится абсолютным **до** смены каталога.
+`-I` и приватный cwd исключают импорт `json.py` и других модулей из проверяемого PR.
 Не собирай JSON shell-интерполяцией и не удаляй кавычки из находок ради формата.
 
 - `mode` — `first` или `followup`.
