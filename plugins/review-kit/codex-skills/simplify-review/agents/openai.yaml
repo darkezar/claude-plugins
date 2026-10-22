@@ -1,0 +1,3 @@
+interface:
+  display_name: "Ревью упрощений"
+  short_description: "Поиск дублирования и избыточной сложности"

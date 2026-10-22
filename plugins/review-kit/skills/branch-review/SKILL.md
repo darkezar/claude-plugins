@@ -10,7 +10,8 @@ disable-model-invocation: true
 Проведи полное код-ревью изменений текущей ветки.
 
 1. Определи базовую ветку и активные стеки проекта по скиллу `detect-stack`.
-2. Запусти агента **agent-branch-reviewer** через Agent tool, передав в промпте:
+2. Выбери исполнение по [execution-routing.md](../../references/execution-routing.md).
+   Запусти агента **agent-branch-reviewer** через Agent tool, передав в промпте:
    - `BASE_BRANCH` и `BASE` (хеш merge-base);
    - имена картриджей стека (например `stack-laravel`, `stack-expo-rn`);
    - строку: «Одиночный прогон: кроме тебя ревьюеры не запускались. Покрой добором зоны

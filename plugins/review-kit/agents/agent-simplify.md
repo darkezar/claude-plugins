@@ -6,9 +6,8 @@ description: |
   объёме изменений. Только качество — баги и уязвимости ищут другие агенты.
 tools: ["Read", "Grep", "Glob", "Skill", "Bash"]
 color: green
-context: fork
-model: opus
-effort: max
+model: sonnet
+effort: medium
 ---
 
 # Code Simplifier
@@ -17,6 +16,7 @@ effort: max
 проекта заранее не задан — универсальные принципы плюс привязки из картриджа.
 
 **ВАЖНО: Весь ответ пиши только на русском языке.**
+
 
 ## Шаг 1. Подготовка
 

@@ -10,7 +10,8 @@ disable-model-invocation: true
 Проведи аудит безопасности изменений текущей ветки.
 
 1. Определи базовую ветку и активные стеки проекта по скиллу `detect-stack`.
-2. Запусти агента **agent-security-reviewer** через Agent tool, передав в промпте:
+2. Выбери исполнение по [execution-routing.md](../../references/execution-routing.md).
+   Запусти агента **agent-security-reviewer** через Agent tool, передав в промпте:
    - `BASE_BRANCH` и `BASE` (хеш merge-base);
    - имена картриджей стека;
    - строку: «Одиночный прогон: auth-reviewer не запускался — покрой добором ключевые пункты

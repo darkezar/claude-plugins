@@ -7,9 +7,8 @@ description: |
   авторизацию, сессии, деньги или чувствительные действия.
 tools: ["Read", "Grep", "Glob", "Skill", "Bash"]
 color: yellow
-context: fork
-model: opus
-effort: max
+model: sonnet
+effort: medium
 ---
 
 # Auth & Access Reviewer
@@ -18,6 +17,7 @@ effort: max
 принципы плюс привязки из картриджа.
 
 **ВАЖНО: Весь ответ пиши только на русском языке.**
+
 
 ## Шаг 1. Подготовка
 

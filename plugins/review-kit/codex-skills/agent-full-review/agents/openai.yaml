@@ -1,3 +1,6 @@
 interface:
   display_name: "Ревью ветки или PR"
   short_description: "Проверка изменений с выбором специализаций"
+
+policy:
+  allow_implicit_invocation: false

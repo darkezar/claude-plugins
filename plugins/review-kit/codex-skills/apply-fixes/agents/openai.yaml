@@ -1,3 +1,6 @@
 interface:
   display_name: "Исправления после ревью"
-  short_description: "Применение согласованных замечаний ревью"
+  short_description: "Исправление всех замечаний ревью"
+
+policy:
+  allow_implicit_invocation: false

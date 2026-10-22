@@ -9,6 +9,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from review_storage import read_json, write_json
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 VERDICTS = {"READY TO PR", "READY AFTER FIXES", "NEEDS WORK"}
@@ -18,7 +20,17 @@ RULE_NAMES = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md")
 # а лишь сбросило бы все ветки на полный прогон.
 REVIEW_FILES = (
     "codex-skills/agent-full-review/**/*",
+    "codex-skills/detect-stack/**/*",
+    "codex-skills/stack-*/**/*",
+    "codex-skills/i18n-sync/**/*",
     "agents/*.md",
+    "references/execution-routing.md",
+    "references/balanced-review.md",
+    "references/check-commands.md",
+    "references/review-artifacts.md",
+    "codex-skills/references/review-target.md",
+    "skills/detect-stack/**/*",
+    "skills/i18n-sync/**/*",
     "skills/stack-*/**/*",
     "scripts/*.py",
 )
@@ -152,12 +164,53 @@ def rule_files(repo, touched, rules):
     return found, sorted(extra)
 
 
+def tree_changes(repo, before, after):
+    """Реальные пути и статусы двух деревьев, без rename-эвристик и внешних команд."""
+    raw = git(repo, "diff-tree", "-r", "--no-commit-id", "--no-renames", "--no-ext-diff",
+              "--no-textconv", "--raw", "-z", before, after, "--").split(b"\0")
+    return {os.fsdecode(path): header.rsplit(b" ", 1)[1].decode()
+            for header, path in zip(raw[::2], raw[1::2])}
+
+
+def merge_files(repo, merge):
+    """Находит решения merge по деревьям, не выполняя повторное слияние и его drivers."""
+    parents = git(repo, "rev-list", "--parents", "-n", "1", merge).decode().split()[1:]
+    result_changes = [set(tree_changes(repo, parent, merge)) for parent in parents]
+    conservative = set().union(*result_changes)
+    if len(parents) != 2:
+        return conservative
+    try:
+        bases = git(repo, "merge-base", "--all", *parents).decode().split()
+    except subprocess.CalledProcessError:
+        return conservative
+    if len(bases) != 1:
+        return conservative
+
+    left, right = [tree_changes(repo, bases[0], parent) for parent in parents]
+    common = left.keys() & right.keys()
+    # Удаление общего пути может быть rename/delete или rename/rename: новый путь
+    # не обязан совпасть у родителей. D/F-коллизии тоже требуют полного набора.
+    directories = [{str(parent) for name in changed for parent in Path(name).parents}
+                   for changed in (left, right)]
+    structural_conflict = (
+        any(left[name] in {"D", "T"} or right[name] in {"D", "T"} for name in common)
+        or left.keys() & directories[1] or right.keys() & directories[0]
+    )
+    if structural_conflict:
+        return conservative
+
+    from_left, from_right = result_changes
+    return (common | (from_left & from_right)
+            | ((left.keys() - right.keys()) & from_left)
+            | ((right.keys() - left.keys()) & from_right))
+
+
 def increment(repo, old_head, head_sha, base_sha):
     """Прирост с прошлого прогона: свои коммиты ветки и разрешённые конфликты слияний.
 
     Слияние с базой приносит в ветку уже принятый там код — его ревью не повторяется.
-    Но разрешение конфликта записано в самом коммите слияния, поэтому его файлы входят
-    в прирост.
+    Совместно изменённые пути и ручные отклонения результата входят в прирост.
+    Неоднозначные структурные слияния проверяются консервативно целиком.
     """
     span = (f"{old_head}..{head_sha}", "--not", base_sha)
     commits = git(repo, "rev-list", "--no-merges", *span).decode().split()
@@ -165,8 +218,7 @@ def increment(repo, old_head, head_sha, base_sha):
     files = set(names(git(repo, "log", "--no-merges", "--no-renames", "-z", "--name-only",
                           "--format=", *span, "--")))
     for merge in merges:
-        files.update(names(git(repo, "show", "--cc", "--format=", "--name-only", "-z",
-                               merge, "--")))
+        files.update(merge_files(repo, merge))
     return {"commits": commits, "merges": merges, "files": sorted(files)}
 
 
@@ -201,10 +253,9 @@ def history(repo, target):
 def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
     """Фиксирует обе стороны сравнения, дерево, правила и версию инструкций.
 
-    Повторный прогон не требует прежней базы: GitHub сдвигает базу PR при каждом push,
-    а дифф ветки от этого не меняется. Требуется, чтобы прежняя голова и прежняя точка
-    расхождения были предками текущих — то есть ветку дописали или влили в неё базу,
-    но не переписали.
+    Прежние голова, точка расхождения и база должны быть предками текущих:
+    ветку дописали или влили базу, но не переписали историю. Изменения базы
+    возвращаются отдельно в base_changes для проверки влияния на PR.
     """
     repo = Path(git(repo, "rev-parse", "--show-toplevel").decode().strip())
     base_sha = git(repo, "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}")
@@ -243,7 +294,7 @@ def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
     snapshot["key"] = digest([json.dumps(snapshot, sort_keys=True).encode()])
     previous = history(repo, target)
     last = previous[-1] if previous else None
-    mode, added = "first", None
+    mode, added, base_changes = "first", None, []
     if last:
         old = last["snapshot"]
         if old.get("key") == snapshot["key"]:
@@ -255,10 +306,27 @@ def capture(repo, base, head="HEAD", target=None, scope="auto", rules=()):
             ))
             and is_ancestor(repo, old.get("head_sha"), head_sha)
             and is_ancestor(repo, old.get("merge_base"), merge_base)
+            and is_ancestor(repo, old.get("base_sha"), base_sha)
         ):
             mode = "followup"
             added = increment(repo, old["head_sha"], head_sha, base_sha)
-    return {"snapshot": snapshot, "mode": mode, "previous": last, "increment": added}
+            base_changes = sorted(tree_changes(repo, old["base_sha"], base_sha))
+    return {"snapshot": snapshot, "mode": mode, "previous": last, "increment": added,
+            "base_changes": base_changes,
+            "base_changes_key": digest([json.dumps(base_changes, ensure_ascii=False).encode()]),
+            "analysis_round": last_analysis_round(previous)}
+
+
+def last_analysis_round(previous):
+    """Последний завершённый анализ; старые записи без номера учитываются по порядку."""
+    number = 0
+    for entry in previous:
+        value = entry.get("analysis_round")
+        if type(value) is int and value >= 0:
+            number = max(number, value)
+        elif entry["report"].get("analysis_reused") is not True:
+            number += 1
+    return number
 
 
 def record(repo, snapshot, report):
@@ -268,21 +336,43 @@ def record(repo, snapshot, report):
     for key in ("findings", "open", "checks"):
         if not isinstance(report.get(key), list):
             raise ValueError(f"Поле {key} должно быть массивом")
-    current = capture(
+    state = capture(
         repo, snapshot["base_sha"], snapshot["head_sha"], snapshot["target"],
         snapshot["scope"], snapshot["rules"]
-    )["snapshot"]
+    )
+    current = state["snapshot"]
     if current["key"] != snapshot["key"]:
         raise ValueError("Код, правила или пакет изменились во время ревью; запись отклонена")
+    reused = report.get("analysis_reused") is True
+    if reused and (state["mode"] == "first" or any(
+        (state["increment"] or {}).get(key) for key in ("commits", "files")
+    )):
+        raise ValueError("Нельзя переиспользовать анализ при новом коде или несовместимом снимке")
+    if reused and state["base_changes"]:
+        impact = report.get("impact")
+        assessment = impact.get("base_assessment") if isinstance(impact, dict) else None
+        if not (
+            isinstance(assessment, dict)
+            and assessment.get("base_changes_key") == state["base_changes_key"]
+            and assessment.get("affects_pr") is False
+            and isinstance(assessment.get("evidence"), str)
+            and assessment["evidence"].strip()
+        ):
+            raise ValueError("Переиспользование после изменения базы требует impact.base_assessment "
+                             "с текущим base_changes_key, affects_pr: false и evidence")
+        report = {**report, "impact": {**impact, "base_assessment": {
+            **assessment, "paths": state["base_changes"],
+        }}}
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "snapshot": snapshot,
         "report": report,
+        "analysis_round": state["analysis_round"] + (not reused),
     }
     path = log_path(repo)
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return {"log": str(path), "key": snapshot["key"]}
+    return {"log": str(path), "key": snapshot["key"], "analysis_round": entry["analysis_round"]}
 
 
 def main():
@@ -295,6 +385,7 @@ def main():
     take.add_argument("--target")
     take.add_argument("--scope", default="auto")
     take.add_argument("--rules", action="append", default=[])
+    take.add_argument("--output", type=Path, help="Атомарно сохранить JSON 0600 в приватном каталоге")
     save = commands.add_parser("record", help="Записать завершённый прогон")
     save.add_argument("--repo", default=".")
     save.add_argument("--snapshot", required=True)
@@ -303,9 +394,11 @@ def main():
     try:
         if args.command == "capture":
             result = capture(args.repo, args.base, args.head, args.target, args.scope, args.rules)
+            if args.output:
+                write_json(args.output, result)
         else:
-            data = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
-            report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+            data = read_json(args.snapshot)
+            report = read_json(args.report)
             result = record(args.repo, data["snapshot"], report)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"review-kit: {error}\n")

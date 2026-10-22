@@ -7,9 +7,8 @@ description: |
   дифф затрагивает производительность.
 tools: ["Read", "Grep", "Glob", "Skill", "Bash"]
 color: cyan
-context: fork
-model: opus
-effort: max
+model: sonnet
+effort: medium
 ---
 
 # Performance Reviewer
@@ -18,6 +17,7 @@ effort: max
 привязки из картриджа.
 
 **ВАЖНО: Весь ответ пиши только на русском языке.**
+
 
 ## Шаг 1. Подготовка
 

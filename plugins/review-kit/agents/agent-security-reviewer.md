@@ -8,9 +8,8 @@ description: |
   персональными данными. Привязки под стек берутся из картриджа.
 tools: ["Read", "Grep", "Glob", "Skill", "Bash"]
 color: red
-context: fork
-model: opus
-effort: max
+model: sonnet
+effort: medium
 ---
 
 # Security Reviewer
@@ -19,6 +18,7 @@ effort: max
 универсальным категориям уязвимостей и подтягиваешь конкретные привязки из картриджа стека.
 
 **ВАЖНО: Весь ответ пиши только на русском языке.**
+
 
 ## Шаг 1. Подготовка
 

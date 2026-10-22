@@ -10,7 +10,8 @@ disable-model-invocation: true
 Проверь изменения текущей ветки на соответствие дизайн-системе проекта.
 
 1. Определи базовую ветку и активные стеки проекта по скиллу `detect-stack`.
-2. Запусти агента **agent-design-reviewer** через Agent tool, передав в промпте:
+2. Выбери исполнение по [execution-routing.md](../../references/execution-routing.md).
+   Запусти агента **agent-design-reviewer** через Agent tool, передав в промпте:
    - `BASE_BRANCH` и `BASE` (хеш merge-base);
    - имена картриджей стека;
    - строку: «Одиночный прогон: остальные ревьюеры не запускались».

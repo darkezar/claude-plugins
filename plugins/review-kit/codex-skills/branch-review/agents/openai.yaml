@@ -1,0 +1,3 @@
+interface:
+  display_name: "Ревью кода"
+  short_description: "Корректность, типы, архитектура и тесты изменений"

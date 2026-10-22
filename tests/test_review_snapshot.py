@@ -3,7 +3,9 @@
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,9 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "plugins/review-kit/scripts/review_snapshot.py"
+sys.path.insert(0, str(SCRIPT.parent))
+from review_storage import write_json
+
 SPEC = importlib.util.spec_from_file_location("review_snapshot", SCRIPT)
 snapshots = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(snapshots)
@@ -74,6 +79,45 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.commit("fix")
         self.assertEqual("followup", self.capture()["mode"])
 
+    def test_ci_refresh_does_not_add_a_code_review_round(self):
+        self.assertEqual(0, self.capture()["analysis_round"])
+        result = self.record()
+        self.assertEqual(1, self.capture()["analysis_round"])
+        refreshed = {**self.report, "analysis_reused": True, "ci": {"state": "pending"}}
+        snapshots.record(self.repo, result["snapshot"], refreshed)
+        self.assertEqual(1, self.capture()["analysis_round"])
+        self.write("code.txt", "fix\n")
+        self.commit("fix")
+        self.assertEqual(1, self.capture()["analysis_round"])
+        self.record()
+        self.assertEqual(2, self.capture()["analysis_round"])
+
+    def test_changed_code_cannot_be_marked_as_only_a_ci_refresh(self):
+        self.record()
+        self.write("code.txt", "fix\n")
+        self.commit("fix")
+        result = self.capture()
+        with self.assertRaisesRegex(ValueError, "переиспользовать анализ"):
+            snapshots.record(self.repo, result["snapshot"], {**self.report, "analysis_reused": True})
+
+    def test_new_analysis_of_same_snapshot_counts_as_another_round(self):
+        self.record()
+        self.record()
+        self.assertEqual(2, self.capture()["analysis_round"])
+
+    def test_legacy_rounds_and_status_refresh_share_one_counter(self):
+        self.record()
+        journal = snapshots.log_path(self.repo)
+        entry = json.loads(journal.read_text())
+        entry.pop("analysis_round")
+        journal.write_text(json.dumps(entry) + "\n")
+        state = self.capture()
+        self.assertEqual(1, state["analysis_round"])
+        snapshots.record(self.repo, state["snapshot"], {**self.report, "analysis_reused": True})
+        self.assertEqual(1, self.capture()["analysis_round"])
+        self.record()
+        self.assertEqual(2, self.capture()["analysis_round"])
+
     def move_base(self, path="release.txt", text="new base\n"):
         self.git("switch", "main")
         self.write(path, text)
@@ -87,10 +131,29 @@ class ReviewSnapshotTest(unittest.TestCase):
         result = self.capture(base=self.move_base())
         self.assertEqual("followup", result["mode"])
         self.assertEqual({"commits": [], "merges": [], "files": []}, result["increment"])
+        self.assertEqual(["release.txt"], result["base_changes"])
+
+    def test_reusing_analysis_after_base_changes_requires_complete_impact_evidence(self):
+        self.record()
+        result = self.capture(base=self.move_base())
+        valid = {"base_changes_key": result["base_changes_key"], "affects_pr": False,
+                 "evidence": "Release metadata has no consumers in the PR or its checks"}
+        for assessment in (None, {**valid, "base_changes_key": "stale"}, {**valid, "affects_pr": True},
+                           {**valid, "evidence": ""}):
+            with self.subTest(assessment=assessment), self.assertRaisesRegex(ValueError, "base_assessment"):
+                snapshots.record(self.repo, result["snapshot"], {
+                    **self.report, "analysis_reused": True,
+                    "impact": {"base_assessment": assessment},
+                })
+        snapshots.record(self.repo, result["snapshot"], {
+            **self.report, "analysis_reused": True, "impact": {"base_assessment": valid},
+        })
+        stored = self.capture(base=result["snapshot"]["base_sha"])
+        self.assertEqual(1, stored["analysis_round"])
+        self.assertEqual(["release.txt"], stored["previous"]["report"]["impact"]["base_assessment"]["paths"])
 
     def test_fix_after_base_moved_is_followup(self):
-        # GitHub сдвигает базу PR при каждом push, поэтому сдвиг базы не должен сбрасывать
-        # ветку на полный прогон.
+        # Продвижение базы допускает целевую проверку её влияния вместо полного прогона.
         self.record()
         moved = self.move_base()
         self.write("code.txt", "fix\n")
@@ -141,6 +204,114 @@ class ReviewSnapshotTest(unittest.TestCase):
         self.write("code.txt", "other pending fix\n")
         self.assertEqual("first", self.capture()["mode"])
 
+    def conflicting_merge(self, path, choice):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        self.git("checkout", choice, "--", path)
+        self.git("add", path)
+        self.git("commit", "--no-edit")
+
+    def check_parent_resolution(self, choice):
+        self.record()
+        moved = self.move_base("code.txt", "main version\n")
+        self.conflicting_merge("code.txt", choice)
+        result = self.capture(base=moved)
+        self.assertEqual("followup", result["mode"])
+        self.assertEqual([], result["increment"]["commits"])
+        self.assertEqual(["code.txt"], result["increment"]["files"])
+
+    def test_merge_resolution_matching_ours_is_reviewed(self):
+        self.check_parent_resolution("--ours")
+
+    def test_merge_resolution_matching_theirs_is_reviewed(self):
+        self.check_parent_resolution("--theirs")
+
+    def test_conflict_free_merge_does_not_review_imported_base_files(self):
+        self.record()
+        moved = self.move_base()
+        self.git("merge", "--no-edit", "main")
+        result = self.capture(base=moved)
+        self.assertEqual("followup", result["mode"])
+        self.assertEqual([], result["increment"]["files"])
+        self.assertEqual(["release.txt"], result["base_changes"])
+
+    def test_rewritten_base_requires_full_review(self):
+        moved = self.move_base()
+        self.record(base=moved)
+        self.git("switch", "main")
+        self.git("commit", "--amend", "-m", "rewritten base")
+        rewritten = self.git("rev-parse", "HEAD")
+        self.git("switch", "feature")
+        self.assertEqual("first", self.capture(base=rewritten)["mode"])
+
+    def test_capture_does_not_execute_configured_merge_driver(self):
+        self.write(".gitattributes", "code.txt merge=probe\n")
+        self.commit("merge attributes")
+        marker = Path(self.temp.name) / "driver-ran"
+        driver = Path(self.temp.name) / "merge-driver.py"
+        driver.write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).touch()\nraise SystemExit(1)\n"
+        )
+        self.git("config", "merge.probe.driver",
+                 f"{shlex.quote(sys.executable)} {shlex.quote(str(driver))}")
+        self.record()
+        moved = self.move_base("code.txt", "main version\n")
+        self.conflicting_merge("code.txt", "--ours")
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        result = self.capture(base=moved)
+        self.assertFalse(marker.exists(), "capture must only read trees, not run merge drivers")
+        self.assertEqual(["code.txt"], result["increment"]["files"])
+
+    def test_binary_resolution_matching_ours_is_reviewed(self):
+        self.write("code.txt", "ours\0binary\n")
+        self.commit("binary feature")
+        self.record()
+        moved = self.move_base("code.txt", "theirs\0binary\n")
+        self.conflicting_merge("code.txt", "--ours")
+        self.assertEqual(["code.txt"], self.capture(base=moved)["increment"]["files"])
+
+    def test_rename_delete_keeps_the_actual_renamed_path(self):
+        self.git("restore", "--source", self.base, "--", "code.txt")
+        self.git("mv", "code.txt", "renamed.txt")
+        self.commit("rename feature")
+        self.record()
+        self.git("switch", "main")
+        self.git("rm", "code.txt")
+        self.commit("delete in base")
+        moved = self.git("rev-parse", "HEAD")
+        self.git("switch", "feature")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        self.git("add", "renamed.txt")
+        self.git("commit", "--no-edit")
+        self.assertEqual(["renamed.txt"], self.capture(base=moved)["increment"]["files"])
+
+    def test_directory_file_resolution_contains_no_synthetic_remerge_paths(self):
+        self.write("shape", "ours file\n")
+        self.commit("file feature")
+        self.record()
+        moved = self.move_base("shape/child.txt", "base child\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "main")
+        for path in self.repo.glob("shape~*"):
+            path.unlink()
+        (self.repo / "shape/child.txt").unlink()
+        (self.repo / "shape").rmdir()
+        self.write("shape", "ours file\n")
+        self.commit("resolve as file")
+        self.assertEqual(["code.txt", "shape", "shape/child.txt"],
+                         self.capture(base=moved)["increment"]["files"])
+
+    def test_rejected_one_sided_base_change_is_reviewed(self):
+        self.record()
+        moved = self.move_base()
+        self.git("merge", "--no-commit", "main")
+        self.git("rm", "--cached", "release.txt")
+        (self.repo / "release.txt").unlink()
+        self.git("commit", "--no-edit")
+        self.assertEqual(["release.txt"], self.capture(base=moved)["increment"]["files"])
+
     def test_untracked_content_with_unusual_name_is_part_of_snapshot(self):
         self.write('new "file\n.txt', "first\n")
         self.record()
@@ -187,10 +358,35 @@ class ReviewSnapshotTest(unittest.TestCase):
 
     def test_plugin_release_without_checklist_changes_keeps_result(self):
         plugin = self.fake_plugin()
+        journal = plugin / "references/pr-review-journal.md"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text("initial journal format\n")
         with patch.object(snapshots, "PLUGIN_ROOT", plugin):
             self.record()
             (plugin / ".codex-plugin/plugin.json").write_text("new version\n")
+            journal.write_text("updated journal format\n")
             self.assertEqual("unchanged", self.capture()["mode"])
+
+    def test_codex_context_changes_invalidate_cached_review(self):
+        plugin = self.fake_plugin()
+        paths = [plugin / path / "SKILL.md" for path in (
+            "codex-skills/detect-stack", "codex-skills/stack-nextjs",
+            "codex-skills/i18n-sync", "skills/detect-stack", "skills/i18n-sync"
+        )]
+        paths.extend(plugin / path for path in (
+            "references/execution-routing.md", "references/balanced-review.md",
+            "references/check-commands.md", "references/review-artifacts.md",
+            "codex-skills/references/review-target.md",
+        ))
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("initial context\n")
+        with patch.object(snapshots, "PLUGIN_ROOT", plugin):
+            for path in paths:
+                with self.subTest(skill=str(path.relative_to(plugin))):
+                    self.record()
+                    path.write_text("updated review context\n")
+                    self.assertEqual("first", self.capture()["mode"])
 
     def test_change_hidden_by_textconv_invalidates_snapshot(self):
         self.write(".gitattributes", "*.dat diff=first-line\n")
@@ -281,6 +477,24 @@ class ReviewSnapshotTest(unittest.TestCase):
             stream.write('broken\nnull\n{"snapshot":null}\n')
         self.assertEqual("unchanged", self.capture()["mode"])
 
+    def test_cli_record_rejects_symlink_inputs(self):
+        root = Path(self.temp.name)
+        snapshot_file, report_file = root / "snapshot.json", root / "report.json"
+        write_json(snapshot_file, self.capture())
+        write_json(report_file, self.report)
+        link = root / "untrusted-link.json"
+        for option, target in (("--snapshot", snapshot_file), ("--report", report_file)):
+            link.unlink(missing_ok=True)
+            link.symlink_to(target)
+            args = {"--snapshot": str(snapshot_file), "--report": str(report_file)}
+            args[option] = str(link)
+            command = [sys.executable, str(SCRIPT), "record", "--repo", str(self.repo)]
+            for flag, value in args.items():
+                command.extend((flag, value))
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            self.assertEqual(1, result.returncode)
+            self.assertFalse(snapshots.log_path(self.repo).exists())
+
     def test_cli_capture_and_record(self):
         snapshot_file = Path(self.temp.name) / "snapshot.json"
         report_file = Path(self.temp.name) / "report.json"
@@ -288,13 +502,32 @@ class ReviewSnapshotTest(unittest.TestCase):
             ["python3", str(SCRIPT), "capture", "--repo", str(self.repo), "--base", self.base],
             check=True, capture_output=True, text=True,
         )
-        snapshot_file.write_text(result.stdout)
-        report_file.write_text(json.dumps(self.report))
+        write_json(snapshot_file, json.loads(result.stdout))
+        write_json(report_file, self.report)
         subprocess.run(
             ["python3", str(SCRIPT), "record", "--repo", str(self.repo),
              "--snapshot", str(snapshot_file), "--report", str(report_file)],
             check=True, capture_output=True,
         )
+        self.assertEqual("unchanged", self.capture()["mode"])
+
+    def test_cli_output_creates_private_snapshot_with_umask_022(self):
+        root = Path(self.temp.name)
+        snapshot_file, report_file = root / "snapshot.json", root / "report.json"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "capture", "--repo", str(self.repo),
+             "--base", self.base, "--output", str(snapshot_file)],
+            umask=0o022, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(0o600, snapshot_file.stat().st_mode & 0o777)
+        write_json(report_file, self.report)
+        recorded = subprocess.run(
+            [sys.executable, str(SCRIPT), "record", "--repo", str(self.repo),
+             "--snapshot", str(snapshot_file), "--report", str(report_file)],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(0, recorded.returncode, recorded.stderr)
         self.assertEqual("unchanged", self.capture()["mode"])
 
 

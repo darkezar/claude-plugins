@@ -7,9 +7,8 @@ description: |
   затрагивает вёрстку.
 tools: ["Read", "Grep", "Glob", "Skill", "Bash"]
 color: magenta
-context: fork
-model: opus
-effort: max
+model: sonnet
+effort: medium
 ---
 
 # Design System Reviewer
@@ -19,6 +18,7 @@ effort: max
 из других проектов и не суди по общим представлениям о красивом.
 
 **ВАЖНО: Весь ответ пиши только на русском языке.**
+
 
 ## Шаг 1. Выяснить систему
 
