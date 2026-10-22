@@ -107,9 +107,23 @@ def save_map(repo, pr, payload):
         if payload.get('revision', 0) != revision:
             raise RevisionConflict('Карта изменена другой сессией: перечитай и сведи items по comment_id')
         updated = {**payload, 'revision': revision + 1}
+        if 'repair_history' in current:
+            if not isinstance(current['repair_history'], list):
+                raise ValueError('repair_history должен быть массивом')
+            updated['repair_history'] = current['repair_history']
+        else:
+            updated.pop('repair_history', None)
         write_json(path, updated)
-        payload['revision'] = updated['revision']
+        payload.clear()
+        payload.update(updated)
     return path
+
+
+def legacy_comment_id(value):
+    """Идентичность старого ID для карантина, без угадывания отсутствующих значений."""
+    if type(value) is int or (isinstance(value, str) and value.strip()):
+        return str(value)
+    return None
 
 
 def repair_map(repo, pr, payload, quarantine_items=(), quarantine_reason=None):
@@ -149,16 +163,19 @@ def repair_map(repo, pr, payload, quarantine_items=(), quarantine_reason=None):
         for index, item in enumerate(current['items']):
             comment_id = item.get('comment_id') if isinstance(item, dict) else None
             if index in positions:
-                quarantined.append({'index': index, 'comment_id': comment_id if isinstance(comment_id, str) else None,
-                                    'reason': quarantine_reason})
+                quarantined.append({'index': index, 'comment_id': legacy_comment_id(comment_id),
+                                    'reason': quarantine_reason, 'source_item': item})
                 continue
             if not isinstance(comment_id, str) or not comment_id.strip() or comment_id in previous:
                 raise ValueError('Невосстановимый item требует явного карантина по индексу')
+            if (item.get('state') not in ('pending', 'partial', 'local', 'published', 'skipped')
+                    or any(key in item and type(item[key]) is not bool for key in ('resolved', 'reply_verified'))):
+                raise ValueError('Некорректный старый статус требует явного карантина по индексу')
             previous[comment_id] = item
         candidate_ids = {item['comment_id'] for item in payload['items']}
         if not previous.keys() <= candidate_ids:
             raise ValueError('Ремонт не может удалить исходные comment_id без карантина')
-        excluded_ids = {item['comment_id'] for item in quarantined} - previous.keys()
+        excluded_ids = {item['comment_id'] for item in quarantined if item['comment_id'] is not None}
         if excluded_ids & candidate_ids:
             raise ValueError('Item карантина не должен возвращаться в активный список')
         for item in payload['items']:
@@ -199,6 +216,8 @@ def main():
     if (bool(args.quarantine_item) != (args.quarantine_reason is not None)
             or (args.quarantine_reason is not None and not args.quarantine_reason.strip())):
         parser.error('--quarantine-item и непустая --quarantine-reason нужны вместе')
+    if any(index < 0 for index in args.quarantine_item) or len(set(args.quarantine_item)) != len(args.quarantine_item):
+        parser.error('--quarantine-item требует уникальные неотрицательные индексы')
     try:
         if args.command == 'load':
             print(json.dumps(load_map(args.repo, args.pr), ensure_ascii=False, indent=2))
