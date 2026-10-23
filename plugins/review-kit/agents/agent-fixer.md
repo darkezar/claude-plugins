@@ -7,8 +7,8 @@ description: |
   Работает последовательно, без поиска новых проблем.
 tools: ["Read", "Grep", "Glob", "Skill", "Bash", "Edit", "Write"]
 color: green
-model: sonnet
-effort: medium
+model: opus
+effort: high
 ---
 
 # Fixer
