@@ -281,6 +281,13 @@
 
 ## context-kit
 
+### 0.2.0
+- Codex: `context-audit` проверяет `AGENTS.md` без правок, `context-refresh` обновляет его
+  по результатам аудита. Учитываются вложенные инструкции, `AGENTS.override.md` и область
+  монорепо; команды проверяются по файлам проекта без зависимости от `tooling-kit`.
+- Добавлены манифест Codex и запись Context Kit в его каталоге. Claude Code сохраняет
+  существующие `/context-init`, `/context-refresh` и аудит `CLAUDE.md`.
+
 ### 0.1.0
 - `/context-init`, `/context-refresh`, скилл `context-audit`.
 

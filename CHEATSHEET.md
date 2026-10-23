@@ -4,11 +4,12 @@
 
 ## Установка на новой машине
 
-**Codex** — полный review-kit, остальные плагины пока для Claude Code:
+**Codex** — полный review-kit и аудит/обновление `AGENTS.md` из context-kit:
 
 ```bash
 codex plugin marketplace add darkezar/claude-plugins
 codex plugin add review-kit@darkezar
+codex plugin add context-kit@darkezar
 ```
 
 Открой новый чат в проекте. Примеры сообщений:
@@ -32,6 +33,9 @@ $review-kit:simplify-review Найди возможности упрощения
 $review-kit:i18n-sync --check
 $review-kit:i18n-sync Синхронизируй недостающие ключи
 $review-kit:detect-stack Определи базу и стеки проекта
+$context-kit:context-audit Проверь AGENTS.md без правок
+$context-kit:context-refresh Обнови AGENTS.md по фактам проекта
+$context-kit:context-refresh backend/AGENTS.md
 ```
 
 При необходимости выбери навык из Review Kit в селекторе. Повторная проверка — тем же
@@ -45,11 +49,17 @@ $review-kit:detect-stack Определи базу и стеки проекта
 Служебные `stack-laravel`, `stack-yii2`, `stack-nextjs`, `stack-react-spa`, `stack-expo-rn`
 тоже доступны как навыки: вместе с `detect-stack` и командами выше их **18**.
 
+У Context Kit два отдельных навыка: аудит только сообщает о расхождениях, обновление правит
+однозначные ошибки и согласовывает спорные правила. Для Codex используется `AGENTS.md`,
+для Claude Code — `CLAUDE.md`. Создание через `/context-init` остаётся только в Claude Code;
+в Codex для нового `AGENTS.md` есть встроенный `/init`.
+
 Обновление установленной копии:
 
 ```bash
 codex plugin marketplace upgrade darkezar
 codex plugin add review-kit@darkezar
+codex plugin add context-kit@darkezar
 ```
 
 После обновления открой новый чат, при необходимости перезапусти клиент.
@@ -220,7 +230,7 @@ codex plugin add review-kit@darkezar
 plugins/
 ├── review-kit/     ревью: 7 агентов, картриджи стека, починка
 ├── tooling-kit/    как запускать тесты и линтеры в этом проекте
-├── context-kit/    CLAUDE.md: создание и поддержка
+├── context-kit/    CLAUDE.md в Claude Code; аудит и обновление AGENTS.md в Codex
 ├── debug-kit/      разбор бага через историю репозитория
 ├── upgrade-kit/    зависимости: инвентаризация и план
 ├── git-kit/        где HEAD и что подвисло, когда git не видно

@@ -1,0 +1,20 @@
+{
+  "name": "context-kit",
+  "version": "0.2.0",
+  "description": "Аудит и обновление AGENTS.md в Codex: проверка путей, команд и правил проекта. Поддержка CLAUDE.md в Claude Code сохраняется отдельно.",
+  "author": {
+    "name": "darkezar"
+  },
+  "repository": "https://github.com/darkezar/claude-plugins",
+  "requires_local_executor": true,
+  "skills": "./codex-skills/",
+  "interface": {
+    "displayName": "Context Kit",
+    "shortDescription": "Проверка и обновление инструкций проекта в AGENTS.md",
+    "developerName": "darkezar",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/darkezar/claude-plugins",
+    "defaultPrompt": ["Проверь AGENTS.md с помощью Context Kit"]
+  }
+}

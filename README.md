@@ -1,7 +1,8 @@
 # claude-plugins
 
-Личный каталог плагинов Claude Code и Codex. Для Codex полностью адаптирован **review-kit**;
-остальные плагины пока работают в Claude Code.
+Личный каталог плагинов Claude Code и Codex. Для Codex полностью адаптирован **review-kit**,
+а в **context-kit** доступны аудит и обновление `AGENTS.md`. Остальные плагины пока работают
+в Claude Code.
 
 **[Памятка](CHEATSHEET.md)** — что набирать и когда. **[Изменения](CHANGELOG.md)** — что менялось.
 Ниже — как это устроено.
@@ -10,7 +11,7 @@
 |---|---|
 | **review-kit** | Ревью-агенты с чек-листами под стек проекта |
 | **tooling-kit** | Находит, как в проекте реально запускаются тесты и линтеры: `/test`, `/lint`, `/typecheck`, `/fmt` |
-| **context-kit** | Создаёт и поддерживает `CLAUDE.md`: `/context-init`, `/context-refresh` |
+| **context-kit** | Claude Code: создание и поддержка `CLAUDE.md`. Codex: аудит и обновление `AGENTS.md` |
 | **debug-kit** | Разбор бага от симптома до причины через историю репозитория: `/debug` |
 | **upgrade-kit** | Инвентаризация зависимостей и план обновления: `/upgrade-check` |
 | **git-kit** | Где HEAD и что подвисло, когда git-интерфейса нет: `/git-state` |
@@ -59,6 +60,7 @@ Claude Code и отдельный MCP-сервер для этой версии 
 ```bash
 codex plugin marketplace add darkezar/claude-plugins
 codex plugin add review-kit@darkezar
+codex plugin add context-kit@darkezar
 ```
 
 Открой новый чат Codex в нужном проекте. Если список навыков не обновился, перезапусти клиент.
@@ -174,9 +176,28 @@ codex plugin add review-kit@darkezar
 После обновления начни новый чат. Для проверки ветки до её слияния в `main` добавляй каталог
 с `--ref <ветка>`. Для локальной разработки вместо GitHub можно указать путь к этому репозиторию.
 
-Review Kit перенесён полностью. Остальные плагины каталога (`tooling-kit`, `context-kit`,
+Review Kit перенесён полностью. Context Kit устанавливается отдельно и предоставляет
+два навыка Codex:
+
+```text
+$context-kit:context-audit Проверь AGENTS.md
+$context-kit:context-refresh Обнови AGENTS.md по фактам проекта
+$context-kit:context-audit backend/AGENTS.md
+$context-kit:context-refresh backend/AGENTS.md
+```
+
+`context-audit` возвращает отчёт без изменений; `context-refresh` сначала выполняет аудит,
+исправляет однозначные механические ошибки и согласовывает спорные правила, сокращения
+и новые инварианты. Оба работают с `AGENTS.md`, учитывают вложенные инструкции и
+`AGENTS.override.md`; без пути выбирают ближайший `AGENTS.md` от текущего каталога до корня git.
+`tooling-kit` и `review-kit` для них не требуются. Claude Code сохраняет `/context-init`,
+`/context-refresh` и `context-audit` для `CLAUDE.md`. `context-init` в Codex не переносился;
+для отсутствующего `AGENTS.md` можно использовать встроенный `/init`.
+
+Обновление Context Kit: `codex plugin marketplace upgrade darkezar`, затем
+`codex plugin add context-kit@darkezar` и новый чат. Остальные плагины (`tooling-kit`,
 `debug-kit`, `git-kit`, `upgrade-kit`, `explain-kit`, `workflow-gate`) пока предназначены
-для Claude Code и не устанавливаются как часть Review Kit.
+для Claude Code.
 
 ## Что набирать
 
@@ -331,17 +352,19 @@ Review Kit перенесён полностью. Остальные плаги�
 
 ### Codex
 
-Нативный каталог Codex — `.agents/plugins/marketplace.json`. Он ссылается на тот же
-`plugins/review-kit`, что каталог Claude; Codex читает `.codex-plugin/plugin.json` и
-навыки из `codex-skills/`, Claude Code — `.claude-plugin/plugin.json` и `skills/`.
+Нативный каталог Codex — `.agents/plugins/marketplace.json`. Каталоги Codex и Claude
+ссылаются на одни и те же `plugins/review-kit` и `plugins/context-kit`. Codex читает
+`.codex-plugin/plugin.json` и навыки из `codex-skills/`, Claude Code — `.claude-plugin/plugin.json`
+и `skills/`.
 Содержимое `agents/` и картриджей стека общее и поставляется внутри пакета: внешних ссылок
-на checkout автора нет. Версии двух манифестов review-kit должны совпадать.
+на checkout автора нет. Версии двух манифестов каждого плагина должны совпадать.
 
 Локальная проверка устанавливаемого пакета:
 
 ```bash
 codex plugin marketplace add /absolute/path/to/claude-plugins
 codex plugin add review-kit@darkezar
+codex plugin add context-kit@darkezar
 codex plugin list --json
 python3 -m unittest discover -s tests -v
 ```
@@ -350,10 +373,11 @@ python3 -m unittest discover -s tests -v
 копию пакета. Правила кэша Claude из следующего раздела не следует переносить на Codex.
 Синтаксис установки сверяется с [документацией OpenAI](https://developers.openai.com/plugins/build/plugins).
 Проверка через `skills/list` app-server должна показывать все 18 навыков Review Kit
-из установленного `codex-skills/`, без ошибок. Чек-листы из `skills/` и `agents/` остаются
+и два навыка Context Kit из установленного `codex-skills/`, без ошибок.
+Чек-листы Review Kit из `skills/` и `agents/` остаются
 справочниками, а не дополнительными Claude-обёртками. Тест `test_codex_package.py`
-сравнивает инвентарь Codex с объединением `commands/` и `skills/` Claude и проверяет,
-что все ссылки разрешаются внутри устанавливаемого пакета.
+сравнивает инвентарь Review Kit с объединением `commands/` и `skills/` Claude, проверяет
+отдельный набор Context Kit, версии манифестов и ссылки внутри обоих пакетов.
 
 ### Claude Code
 
