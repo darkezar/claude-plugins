@@ -44,7 +44,8 @@ $context-kit:context-refresh backend/AGENTS.md
 подробные замечания у строк публикуются с `--comment`.
 `review` и шесть точечных ревьюеров — один проход без журнала полного ревью.
 `ship` выполняет commit, push и создание/обновление PR; отдельное подтверждение этой
-уже запрошенной отправки не нужно. Для Codex используется `$review-kit:ship`,
+уже запрошенной отправки не нужно. Новый PR создаётся черновиком — в ready и под CI
+его переводит владелец. Для Codex используется `$review-kit:ship`,
 а не `/review-kit:ship`. `i18n-sync --check` только проверяет, без правок.
 Служебные `stack-laravel`, `stack-yii2`, `stack-nextjs`, `stack-react-spa`, `stack-expo-rn`
 тоже доступны как навыки: вместе с `detect-stack` и командами выше их **18**.
@@ -92,7 +93,7 @@ codex plugin add context-kit@darkezar
 | Команда | Плагин | Когда |
 |---|---|---|
 | `/agent-full-review` | review-kit | **Перед PR.** Главная команда |
-| `/ship` | review-kit | Ветка → проверки → коммит → push → PR |
+| `/ship` | review-kit | Ветка → проверки → коммит → push → PR-черновик |
 | `/review` | review-kit | Нужно быстро и дёшево, глубина не важна |
 | `/apply-fixes` | review-kit | После ревью — применить правки |
 | `/pr-comments` | review-kit | После ревью — выложить замечания в PR у строк |
@@ -155,7 +156,7 @@ codex plugin add context-kit@darkezar
 … пишешь код …
 /agent-full-review          # отчёт: что не так
 /agent-full-review --fix    # или сразу с правками
-/ship                       # коммит, push, PR
+/ship                       # коммит, push, PR-черновик
 ```
 
 `--fix` применит все однозначные замечания, включая предложения и необязательные оптимизации.
